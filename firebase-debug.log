@@ -1,0 +1,32 @@
+[debug] [2026-10-26T20:04:44.981Z] ----------------------------------------------------------------------
+[debug] [2026-10-26T20:04:44.985Z] Command:       C:\Program Files\nodejs\node.exe C:\Users\dell\AppData\Roaming\npm\node_modules\firebase-tools\lib\bin\firebase.js use --add
+[debug] [2026-10-26T20:04:44.986Z] CLI Version:   15.34.0
+[debug] [2026-10-26T20:04:44.986Z] Platform:      win32
+[debug] [2026-10-26T20:04:44.986Z] Node Version:  v23.3.0
+[debug] [2026-10-26T20:04:44.987Z] Detected Agent: unknown
+[debug] [2026-10-26T20:04:44.987Z] Time:          Mon Oct 26 2026 21:04:44 GMT+0100 (توقيت غرب أفريقيا الرسمي)
+[debug] [2026-10-26T20:04:44.987Z] ----------------------------------------------------------------------
+[debug] 
+[debug] [2026-10-26T20:04:45.438Z] > command requires scopes: ["email","openid","https://www.googleapis.com/auth/cloudplatformprojects.readonly","https://www.googleapis.com/auth/firebase","https://www.googleapis.com/auth/cloud-platform"]
+[debug] [2026-10-26T20:04:45.438Z] > authorizing via signed-in user (eldosoky190@gmail.com)
+[debug] [2026-10-26T20:04:45.462Z] Checked if tokens are valid: true, expires at: 1793048526956
+[debug] [2026-10-26T20:04:45.463Z] Checked if tokens are valid: true, expires at: 1793048526956
+[debug] [2026-10-26T20:04:45.465Z] >>> [apiv2][query] GET https://firebase.googleapis.com/v1beta1/projects pageSize=1000
+[debug] [2026-10-26T20:04:46.822Z] <<< [apiv2][status] GET https://firebase.googleapis.com/v1beta1/projects 200
+[debug] [2026-10-26T20:04:46.823Z] <<< [apiv2][body] GET https://firebase.googleapis.com/v1beta1/projects [omitted]
+[debug] [2026-10-26T20:08:57.502Z] ----------------------------------------------------------------------
+[debug] [2026-10-26T20:08:57.506Z] Command:       C:\Program Files\nodejs\node.exe C:\Users\dell\AppData\Roaming\npm\node_modules\firebase-tools\lib\bin\firebase.js use --add
+[debug] [2026-10-26T20:08:57.507Z] CLI Version:   15.34.0
+[debug] [2026-10-26T20:08:57.507Z] Platform:      win32
+[debug] [2026-10-26T20:08:57.508Z] Node Version:  v23.3.0
+[debug] [2026-10-26T20:08:57.508Z] Detected Agent: unknown
+[debug] [2026-10-26T20:08:57.508Z] Time:          Mon Oct 26 2026 21:08:57 GMT+0100 (توقيت غرب أفريقيا الرسمي)
+[debug] [2026-10-26T20:08:57.509Z] ----------------------------------------------------------------------
+[debug] 
+[debug] [2026-10-26T20:08:57.857Z] > command requires scopes: ["email","openid","https://www.googleapis.com/auth/cloudplatformprojects.readonly","https://www.googleapis.com/auth/firebase","https://www.googleapis.com/auth/cloud-platform"]
+[debug] [2026-10-26T20:08:57.858Z] > authorizing via signed-in user (eldosoky190@gmail.com)
+[debug] [2026-10-26T20:08:57.887Z] Checked if tokens are valid: true, expires at: 1793048526956
+[debug] [2026-10-26T20:08:57.888Z] Checked if tokens are valid: true, expires at: 1793048526956
+[debug] [2026-10-26T20:08:57.895Z] >>> [apiv2][query] GET https://firebase.googleapis.com/v1beta1/projects pageSize=1000
+[debug] [2026-10-26T20:08:59.020Z] <<< [apiv2][status] GET https://firebase.googleapis.com/v1beta1/projects 200
+[debug] [2026-10-26T20:08:59.021Z] <<< [apiv2][body] GET https://firebase.googleapis.com/v1beta1/projects [omitted]

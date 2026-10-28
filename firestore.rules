@@ -1,0 +1,69 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() { return request.auth != null; }
+    function me() { return get(/databases/$(database)/documents/users/$(request.auth.uid)).data; }
+    function hasProfile() { return signedIn() && exists(/databases/$(database)/documents/users/$(request.auth.uid)); }
+    function active() { return hasProfile() && me().active != false; }
+    function role() { return me().role; }
+    function isAdmin() { return active() && role() == 'admin'; }
+    function canRead() { return active() && role() in ['admin','accountant','data_entry','viewer']; }
+    function canCreate() { return active() && role() in ['admin','accountant','data_entry']; }
+    function canUpdate() { return active() && role() in ['admin','accountant']; }
+    function positive(f) { return request.resource.data[f] is number && request.resource.data[f] > 0; }
+
+    // First-run bootstrap: the very first admin may create their own profile only while settings/bootstrap does not exist
+    // and the same batch creates settings/bootstrap.
+    match /settings/bootstrap {
+      allow create: if signedIn() && !exists(/databases/$(database)/documents/settings/bootstrap);
+      allow read: if canRead();
+    }
+    match /users/{uid} {
+      allow read: if signedIn() && (request.auth.uid == uid || isAdmin());
+      allow create: if isAdmin() ||
+        (request.auth.uid == uid && request.resource.data.role == 'admin'
+         && !exists(/databases/$(database)/documents/settings/bootstrap)
+         && existsAfter(/databases/$(database)/documents/settings/bootstrap));
+      allow update, delete: if isAdmin();
+    }
+    match /settings/counters { allow read: if canRead(); allow write: if canCreate(); }
+    match /settings/{id} { allow read: if canRead(); allow write: if isAdmin(); }
+
+    // Audit log: append-only
+    match /auditLogs/{id} {
+      allow read: if active() && role() in ['admin','accountant'];
+      allow create: if canCreate();
+      allow update, delete: if false;
+    }
+
+    // Amount sanity checks on money-moving records
+    match /cashTransactions/{id} {
+      allow read: if canRead();
+      allow create: if canCreate() && positive('amount') && request.resource.data.currency is string;
+      allow update: if canUpdate();
+      allow delete: if isAdmin();
+    }
+    match /milkDeliveries/{id} {
+      allow read: if canRead();
+      allow create: if canCreate() && positive('qty');
+      allow update: if canUpdate(); allow delete: if isAdmin();
+    }
+    match /customerPayments/{id} {
+      allow read: if canRead();
+      allow create: if canCreate() && positive('amount');
+      allow update: if canUpdate(); allow delete: if isAdmin();
+    }
+    // Profit settlements: admin only
+    match /settlements/{id} {
+      allow read: if canRead();
+      allow create: if isAdmin();
+      allow update, delete: if false;
+    }
+    match /{col}/{id} {
+      allow read: if canRead() && col in ['customers','partners','partnerLoans','partnerLoanRepayments','partnerCapitalTransactions','milkProduction','milkSales','customerCredits','expenses','expensePayments','cashAccounts','suppliers','animals','animalEvents','stockItems','stockMovements','journalEntries'];
+      allow create: if canCreate() && col in ['customers','partners','partnerLoans','partnerLoanRepayments','partnerCapitalTransactions','milkProduction','milkSales','customerCredits','expenses','expensePayments','cashAccounts','suppliers','animals','animalEvents','stockItems','stockMovements','journalEntries'];
+      allow update: if canUpdate() && col in ['customers','partners','partnerLoans','partnerLoanRepayments','partnerCapitalTransactions','milkProduction','milkSales','customerCredits','expenses','expensePayments','cashAccounts','suppliers','animals','animalEvents','stockItems','stockMovements','journalEntries'];
+      allow delete: if isAdmin();
+    }
+  }
+}
