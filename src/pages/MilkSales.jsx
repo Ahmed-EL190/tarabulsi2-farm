@@ -1,9 +1,9 @@
 import { useMemo, useState } from 'react';
-import { Plus, Truck, Banknote, Undo2, Zap } from 'lucide-react';
+import { Plus, Truck, Banknote, Undo2, Zap, Pencil, Ban } from 'lucide-react';
 import { Card, Table, Badge, Modal, Empty, PageHeader, Stat, SearchBox, fmt, money, today } from '../components/ui';
 import { FormModal } from '../components/CrudPage';
 import { useCol, commit, nextNumber, newId } from '../data/db';
-import { createAgreement, addDelivery, addCustomerPayment } from '../data/ops';
+import { createAgreement, addDelivery, addCustomerPayment, updateCustomerPayment, voidCustomerPayment } from '../data/ops';
 import { useAuth } from '../data/auth';
 import { agreementPosition, sumByCurrency, round2, salesLedger, salesTotals } from '../lib/finance';
 import { CURRENCIES, METHODS, PAY_STATUS_AR, AG_STATUS_AR, SALE_KIND_AR } from '../lib/constants';
@@ -26,6 +26,7 @@ const agFields = [
 function Detail({ ag, pos, deliveries, payments, onClose }) {
   const { user, can } = useAuth();
   const [form, setForm] = useState(null); const [err, setErr] = useState('');
+  const cashTxs = useCol('cashTransactions').rows; const [editP, setEditP] = useState(null);
   const myD = deliveries.filter((d) => d.agreementId === ag.id && !d.voided).sort((a, b) => a.date.localeCompare(b.date));
   const myP = payments.filter((p) => p.agreementId === ag.id && !p.voided).sort((a, b) => a.date.localeCompare(b.date));
   const alloc = Object.fromEntries(pos.allocations.map((a) => [a.deliveryId, a]));
@@ -48,13 +49,19 @@ function Detail({ ag, pos, deliveries, payments, onClose }) {
       </div>
       <div className="mb-3 flex flex-wrap gap-2">
         {can('create') && <><button className="btn btn-primary" disabled={pos.remainingQty <= 0} onClick={() => setForm('delivery')}><Truck size={16} />تسليم</button><button className="btn btn-ghost" onClick={() => setForm('payment')}><Banknote size={16} />دفعة</button>{pos.unappliedCredit > 0 && <button className="btn btn-ghost" onClick={() => setForm('refund')}><Undo2 size={16} />استرداد</button>}</>}
-        <Badge tone={PAY_TONE[pos.paymentStatus]}>{PAY_STATUS_AR[pos.paymentStatus]}</Badge><Badge tone="gray">{AG_STATUS_AR[pos.status]}</Badge>
+        <Badge tone={PAY_TONE[pos.paymentStatus]}>{PAY_STATUS_AR[pos.paymentStatus]}</Badge><Badge tone="gray">{AG_STATUS_AR[pos.status]}</Badge><Badge tone="blue">سعر اللتر: {money(ag.pricePerLiter, ag.currency)}</Badge>
       </div>
       {ag.schedule && <div className="mb-3 whitespace-pre-line rounded-lg bg-slate-50 p-3 text-sm"><b>الجدول المخطط:</b>{'\n'}{ag.schedule}</div>}
       <h4 className="mb-1 font-bold">التسليمات (الدفعات تُوزَّع الأقدم أولاً)</h4>
-      <Table rows={myD} empty={<Empty title="لا توجد تسليمات" />} columns={[{ key: 'date', label: 'التاريخ' }, { key: 'qty', label: 'الكمية', render: (d) => <span className="num">{fmt(d.qty)}</span> }, { key: 'v', label: 'القيمة', render: (d) => <span className="num">{fmt(alloc[d.id]?.value)}</span> }, { key: 'p', label: 'المسدّد', render: (d) => <span className="num">{fmt(alloc[d.id]?.paid)}</span> }, { key: 'due', label: 'المتبقي', render: (d) => <b className="num">{fmt(alloc[d.id]?.due)}</b> }]} />
+      <Table rows={myD} empty={<Empty title="لا توجد تسليمات" />} columns={[{ key: 'date', label: 'التاريخ' }, { key: 'qty', label: 'الكمية', render: (d) => <span className="num">{fmt(d.qty)}</span> }, { key: 'pr', label: 'سعر اللتر', render: (d) => <span className="num">{fmt(d.pricePerLiter ?? ag.pricePerLiter)}</span> }, { key: 'v', label: 'القيمة', render: (d) => <span className="num">{fmt(alloc[d.id]?.value)}</span> }, { key: 'p', label: 'المسدّد', render: (d) => <span className="num">{fmt(alloc[d.id]?.paid)}</span> }, { key: 'due', label: 'المتبقي', render: (d) => <b className="num">{fmt(alloc[d.id]?.due)}</b> }]} />
       <h4 className="mb-1 mt-4 font-bold">الدفعات والاستردادات</h4>
-      <Table rows={myP} empty={<Empty title="لا توجد دفعات" />} columns={[{ key: 'date', label: 'التاريخ' }, { key: 'type', label: 'النوع', render: (p) => (p.type === 'refund' ? <Badge tone="amber">استرداد</Badge> : p.kind === 'advance' ? <Badge tone="blue">دفعة مقدمة</Badge> : <Badge tone="green">دفعة</Badge>) }, { key: 'amount', label: 'المبلغ', render: (p) => <span className="num">{fmt(p.amount)}</span> }, { key: 'method', label: 'الطريقة' }, { key: 'note', label: 'ملاحظة' }]} />
+      <Table rows={myP} empty={<Empty title="لا توجد دفعات" />} columns={[{ key: 'date', label: 'التاريخ' }, { key: 'type', label: 'النوع', render: (p) => (p.type === 'refund' ? <Badge tone="amber">استرداد</Badge> : p.kind === 'advance' ? <Badge tone="blue">دفعة مقدمة</Badge> : <Badge tone="green">دفعة</Badge>) }, { key: 'amount', label: 'المبلغ', render: (p) => <span className="num">{fmt(p.amount)}</span> }, { key: 'method', label: 'الطريقة' }, { key: 'note', label: 'ملاحظة' },
+        { key: '_a', label: '', render: (p) => <div className="flex gap-1">
+          {can('update') && <button className="rounded p-1.5 hover:bg-slate-100" title="تعديل الدفعة" onClick={() => setEditP(p)}><Pencil size={15} /></button>}
+          {can('voidFinancial') && <button className="rounded p-1.5 text-rose-600 hover:bg-rose-50" title="حذف (إلغاء) الدفعة" onClick={async () => { const why = prompt('سبب حذف الدفعة؟'); if (why) await voidCustomerPayment(user, p, cashTxs, why); }}><Ban size={15} /></button>}</div> }]} />
+      {editP && <FormModal open onClose={() => setEditP(null)} title={editP.type === 'refund' ? 'تعديل استرداد' : 'تعديل دفعة'} fields={[{ name: 'date', label: 'التاريخ', type: 'date', required: true }, { name: 'amount', label: 'المبلغ', type: 'number', required: true, positive: true }, acct, method, { name: 'note', label: 'ملاحظة', type: 'text' }]}
+        defaults={{ date: editP.date, amount: editP.amount, accountId: editP.accountId || '', method: editP.method || 'cash', note: editP.note || '' }}
+        onSubmit={(d) => { if (editP.type === 'refund' && Number(d.amount) > pos.unappliedCredit + Number(editP.amount)) throw new Error('المبلغ أكبر من الرصيد الدائن المتاح للاسترداد'); return updateCustomerPayment(user, editP, cashTxs, d); }} />}
       {f && <FormModal open onClose={() => setForm(null)} title={f.title} fields={f.fields} defaults={{ date: today(), method: 'cash' }} onSubmit={f.submit} />}
     </Modal>
   );
@@ -68,15 +75,15 @@ function AllSales() {
   const rows = all.filter((r) => !kind || r.kind === kind); const t = salesTotals(rows);
   const show = (o) => (Object.keys(o).length ? Object.entries(o).map(([c, v]) => money(v, c)).join(' | ') : money(0));
   return (<>
-    <div className="mb-4 grid gap-3 sm:grid-cols-4">
+    <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
       <Stat label="إجمالي المبيعات" value={<span className="text-lg">{show(t.total)}</span>} tone="green" />
       <Stat label="مبيعات الحليب" value={<span className="text-lg">{show(t.byKind.milk)}</span>} tone="blue" />
       <Stat label="مبيعات الحيوانات" value={<span className="text-lg">{show(t.byKind.animal)}</span>} tone="amber" />
       <Stat label="إيرادات أخرى" value={<span className="text-lg">{show(t.byKind.other)}</span>} tone="purple" />
     </div>
-    <Card><div className="mb-3 flex flex-wrap gap-2"><select className="input w-40" value={kind} onChange={(e) => setKind(e.target.value)}><option value="">كل الأنواع</option>{Object.entries(SALE_KIND_AR).map(([k, l]) => <option key={k} value={k}>{l}</option>)}</select><input type="date" className="input w-40" value={from} onChange={(e) => setFrom(e.target.value)} /><input type="date" className="input w-40" value={to} onChange={(e) => setTo(e.target.value)} /></div>
+    <Card><div className="mb-3 grid grid-cols-1 gap-2 sm:flex sm:flex-wrap"><select className="input w-full sm:w-40" value={kind} onChange={(e) => setKind(e.target.value)}><option value="">كل الأنواع</option>{Object.entries(SALE_KIND_AR).map(([k, l]) => <option key={k} value={k}>{l}</option>)}</select><input type="date" className="input w-full sm:w-40" value={from} onChange={(e) => setFrom(e.target.value)} /><input type="date" className="input w-full sm:w-40" value={to} onChange={(e) => setTo(e.target.value)} /></div>
       <Table rows={rows} empty={<Empty title="لا توجد مبيعات" hint="تظهر هنا مبيعات الحليب (عند التسليم) وبيع الحيوانات والإيرادات الأخرى." />}
-        columns={[{ key: 'date', label: 'التاريخ' }, { key: 'kind', label: 'النوع', render: (r) => <Badge tone={r.kind === 'milk' ? 'blue' : r.kind === 'animal' ? 'amber' : 'gray'}>{SALE_KIND_AR[r.kind]}</Badge> }, { key: 'ref', label: 'المرجع' }, { key: 'party', label: 'العميل / المشتري' }, { key: 'description', label: 'البيان' }, { key: 'qty', label: 'الكمية', render: (r) => (r.qty ? <span className="num">{fmt(r.qty)} {r.kind === 'milk' ? 'لتر' : 'رأس'}</span> : '—') }, { key: 'amount', label: 'المبلغ', render: (r) => <b className="num">{money(r.amount, r.currency)}</b> }]} /></Card>
+        columns={[{ key: 'date', label: 'التاريخ' }, { key: 'kind', label: 'النوع', render: (r) => <Badge tone={r.kind === 'milk' ? 'blue' : r.kind === 'animal' ? 'amber' : 'gray'}>{SALE_KIND_AR[r.kind]}</Badge> }, { key: 'ref', label: 'المرجع' }, { key: 'party', label: 'العميل / المشتري' }, { key: 'description', label: 'البيان' }, { key: 'qty', label: 'الكمية', render: (r) => (r.qty ? <span className="num">{fmt(r.qty)} {r.kind === 'milk' ? 'لتر' : 'رأس'}</span> : '—') }, { key: 'pl', label: 'سعر اللتر', render: (r) => (r.kind === 'milk' && r.qty ? <span className="num">{fmt(r.amount / r.qty)}</span> : '—') }, { key: 'amount', label: 'المبلغ', render: (r) => <b className="num">{money(r.amount, r.currency)}</b> }]} /></Card>
   </>);
 }
 
@@ -104,7 +111,7 @@ export default function MilkSales() {
       <PageHeader title="مبيعات الحليب" subtitle="اتفاقيات البيع، التسليمات، الدفعات المقدمة والمؤجلة — الإيراد يُحتسب عند التسليم">
         {can('create') && <><button className="btn btn-ghost" onClick={() => setQuick(true)}><Zap size={16} />بيع فوري</button><button className="btn btn-primary" onClick={() => setOpen(true)}><Plus size={16} />اتفاقية جديدة</button></>}
       </PageHeader>
-      <div className="mb-3 flex gap-2">{[['ag', 'اتفاقيات الحليب'], ['all', 'كل المبيعات (حليب + حيوانات + أخرى)']].map(([k, l]) => <button key={k} className={`btn ${tab === k ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setTab(k)}>{l}</button>)}</div>
+      <div className="mb-3 flex flex-wrap gap-2 [&>.btn]:flex-1 sm:[&>.btn]:flex-none">{[['ag', 'اتفاقيات الحليب'], ['all', 'كل المبيعات (حليب + حيوانات + أخرى)']].map(([k, l]) => <button key={k} className={`btn ${tab === k ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setTab(k)}>{l}</button>)}</div>
       {tab === 'all' && <AllSales />}
       {tab === 'ag' && (<>
       <div className="mb-4 grid gap-3 sm:grid-cols-3">
@@ -114,7 +121,7 @@ export default function MilkSales() {
       </div>
       <Card><div className="mb-3 max-w-xs"><SearchBox value={q} onChange={setQ} placeholder="رقم الاتفاقية أو العميل" /></div>
         <Table rows={rows} onRow={(r) => setSel(r.id)} empty={<Empty title="لا توجد اتفاقيات بعد" hint="أنشئ أول اتفاقية بيع (أضف العملاء أولاً من صفحة العملاء).">{can('create') && <button className="btn btn-primary mt-2" onClick={() => setOpen(true)}>اتفاقية جديدة</button>}</Empty>}
-          columns={[{ key: 'number', label: 'الرقم', render: (r) => <b>{r.number}</b> }, { key: 'customer', label: 'العميل' }, { key: 'date', label: 'التاريخ' }, { key: 'agreed', label: 'متفق / مسلّم / متبقٍ (لتر)', render: (r) => <span className="num">{fmt(r.pos.agreedQty)} / {fmt(r.pos.deliveredQty)} / {fmt(r.pos.remainingQty)}</span> },
+          columns={[{ key: 'number', label: 'الرقم', render: (r) => <b>{r.number}</b> }, { key: 'customer', label: 'العميل' }, { key: 'date', label: 'التاريخ' }, { key: 'price', label: 'سعر اللتر', render: (r) => <b className="num">{money(r.pricePerLiter, r.currency)}</b> }, { key: 'agreed', label: 'متفق / مسلّم / متبقٍ (لتر)', render: (r) => <span className="num">{fmt(r.pos.agreedQty)} / {fmt(r.pos.deliveredQty)} / {fmt(r.pos.remainingQty)}</span> },
             { key: 'dv', label: 'قيمة المسلّم', render: (r) => <span className="num">{money(r.pos.deliveredValue, r.currency)}</span> }, { key: 'rc', label: 'مقبوض', render: (r) => <span className="num">{money(r.pos.netReceived, r.currency)}</span> }, { key: 'ar', label: 'ذمم', render: (r) => <b className={`num ${r.pos.receivable ? 'text-rose-600' : ''}`}>{money(r.pos.receivable, r.currency)}</b> }, { key: 'cr', label: 'رصيد دائن', render: (r) => <span className="num text-sky-700">{money(r.pos.unappliedCredit, r.currency)}</span> },
             { key: 'st', label: 'الحالة', render: (r) => <div className="flex gap-1"><Badge tone="gray">{AG_STATUS_AR[r.pos.status]}</Badge><Badge tone={PAY_TONE[r.pos.paymentStatus]}>{PAY_STATUS_AR[r.pos.paymentStatus]}</Badge></div> }]} /></Card></>)}
       <FormModal open={open} onClose={() => setOpen(false)} title="اتفاقية بيع جديدة" fields={agFields} defaults={{ date: today(), currency: 'SYP', method: 'cash', advance: '' }}

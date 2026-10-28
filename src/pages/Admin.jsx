@@ -28,7 +28,7 @@ export function Users() {
       <PageHeader title="المستخدمون والصلاحيات" subtitle="الصلاحيات تُفرض في قواعد Firestore وليس في الواجهة فقط"><button className="btn btn-primary" onClick={() => setOpen(true)}>مستخدم جديد</button></PageHeader>
       <Toast msg={msg} tone="green" />
       <Card><Table rows={users} empty={<Empty title="لا يوجد مستخدمون" />} columns={[{ key: 'name', label: 'الاسم' }, { key: 'email', label: 'البريد' },
-        { key: 'role', label: 'الدور', render: (u) => <select className="input w-40" value={u.role} disabled={u.id === user.uid} onChange={(e) => setField(u, { role: e.target.value })}>{ROLES.map((r) => <option key={r} value={r}>{ROLE_AR[r]}</option>)}</select> },
+        { key: 'role', label: 'الدور', render: (u) => <select className="input w-full sm:w-40" value={u.role} disabled={u.id === user.uid} onChange={(e) => setField(u, { role: e.target.value })}>{ROLES.map((r) => <option key={r} value={r}>{ROLE_AR[r]}</option>)}</select> },
         { key: 'active', label: 'الحالة', render: (u) => <button disabled={u.id === user.uid} onClick={() => setField(u, { active: u.active === false })}><Badge tone={u.active === false ? 'red' : 'green'}>{u.active === false ? 'موقوف' : 'نشط'}</Badge></button> }]} /></Card>
       <FormModal open={open} onClose={() => setOpen(false)} title="مستخدم جديد" fields={[{ name: 'name', label: 'الاسم', type: 'text', required: true }, { name: 'email', label: 'البريد الإلكتروني', type: 'text', required: true }, { name: 'password', label: 'كلمة مرور مؤقتة (6+ أحرف)', type: 'text', required: true }, { name: 'role', label: 'الدور', type: 'select', required: true, options: ROLES.map((r) => [r, ROLE_AR[r]]), default: 'viewer' }]} defaults={{ role: 'viewer' }} onSubmit={create} />
     </div>

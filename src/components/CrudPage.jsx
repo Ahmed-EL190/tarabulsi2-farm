@@ -64,7 +64,7 @@ export function FormModal({ open, onClose, title, fields, defaults, onSubmit, su
 
 /** Config-driven list + add/edit/void page.
  * props: title, subtitle, col, fields, cols(ctx)=>[], defaults, searchKeys, create(user,data), useCtx(), summary(rows,ctx), actions(row,ctx), emptyHint, filter(row) */
-export default function CrudPage({ title, subtitle, col, fields, cols, defaults = {}, searchKeys = [], create, useCtx, summary, rowActions, emptyHint, filter, noEdit, extraHeader, createOnlyFields = [], noAdd }) {
+export default function CrudPage({ title, subtitle, col, fields, cols, defaults = {}, searchKeys = [], create, useCtx, summary, rowActions, emptyHint, filter, noEdit, extraHeader, createOnlyFields = [], noAdd, update }) {
   const { user, can } = useAuth();
   const { rows, loading } = useCol(col);
   const ctx = useCtx ? useCtx() : {};
@@ -78,7 +78,7 @@ export default function CrudPage({ title, subtitle, col, fields, cols, defaults 
       {can('voidFinancial') && <button className="rounded p-1.5 text-rose-600 hover:bg-rose-50" title="إلغاء السجل (يبقى في سجل التدقيق)" onClick={async () => { const why = prompt('سبب الإلغاء؟'); if (why) await voidRecord(user, col, r.id, why); }}><Ban size={15} /></button>}
     </div>) }];
   const formFields = edit ? fields.filter((f) => !createOnlyFields.includes(f.name)) : fields;
-  const onSubmit = async (d) => { const clean = Object.fromEntries(Object.entries(d).filter(([, v]) => v !== undefined)); edit ? await saveRecord(user, col, clean, edit.id) : create ? await create(user, clean, ctx) : await saveRecord(user, col, clean); };
+  const onSubmit = async (d) => { const clean = Object.fromEntries(Object.entries(d).filter(([, v]) => v !== undefined)); edit ? (update ? await update(user, clean, edit, ctx) : await saveRecord(user, col, clean, edit.id)) : create ? await create(user, clean, ctx) : await saveRecord(user, col, clean); };
   return (
     <div>
       <PageHeader title={title} subtitle={subtitle}>

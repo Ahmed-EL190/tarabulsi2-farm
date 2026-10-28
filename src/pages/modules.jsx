@@ -24,25 +24,41 @@ export function Production() {
     useCtx={() => ({ animals: useCol('animals').rows })}
     create={(u, d, { animals }) => saveRecord(u, 'milkProduction', { ...d, animalTag: animals.find((a) => a.id === d.animalId)?.tag || '', recordedBy: u.name || u.email })}
     summary={(rows) => { const sum = (f) => rows.filter(f).reduce((a, r) => a + Number(r.liters), 0); const m = today().slice(0, 7);
-      return <div className="grid gap-3 sm:grid-cols-4"><Stat label="إنتاج اليوم" value={`${fmt(sum((r) => r.date === today()))} لتر`} /><Stat label="صباحاً اليوم" value={fmt(sum((r) => r.date === today() && r.shift === 'morning'))} /><Stat label="مساءً اليوم" value={fmt(sum((r) => r.date === today() && r.shift === 'evening'))} /><Stat label="إنتاج الشهر" value={`${fmt(sum((r) => r.date.startsWith(m)))} لتر`} /></div>; }}
+      return <div className="grid grid-cols-2 gap-3 sm:grid-cols-4"><Stat label="إنتاج اليوم" value={`${fmt(sum((r) => r.date === today()))} لتر`} /><Stat label="صباحاً اليوم" value={fmt(sum((r) => r.date === today() && r.shift === 'morning'))} /><Stat label="مساءً اليوم" value={fmt(sum((r) => r.date === today() && r.shift === 'evening'))} /><Stat label="إنتاج الشهر" value={`${fmt(sum((r) => r.date.startsWith(m)))} لتر`} /></div>; }}
     cols={() => [{ key: 'date', label: 'التاريخ' }, { key: 'shift', label: 'الوردية', render: (r) => <Badge tone={r.shift === 'morning' ? 'amber' : 'blue'}>{r.shift === 'morning' ? 'صباحاً' : 'مساءً'}</Badge> }, { key: 'group', label: 'البقرة/المجموعة', render: (r) => r.animalTag || r.group || '—' }, { key: 'liters', label: 'اللترات', render: (r) => <b className="num">{fmt(r.liters)}</b> }, { key: 'recordedBy', label: 'سجّله' }, { key: 'notes', label: 'ملاحظات' }]} />;
 }
 
 // ───────── العملاء
 function StatementModal({ customer, onClose }) {
-  const { user } = useAuth(); const s = useSettings();
+  const s = useSettings();
   const ags = useCol('milkSales').rows, dls = useCol('milkDeliveries').rows, pays = useCol('customerPayments').rows;
   const [from, setFrom] = useState(''); const [to, setTo] = useState('');
   const st = useMemo(() => customerStatement(customer.id, { agreements: ags, deliveries: dls, payments: pays, from, to, openingBalance: Number(customer.openingBalance || 0) }), [customer, ags, dls, pays, from, to]);
-  const KIND = { delivery: 'تسليم', payment: 'دفعة', refund: 'استرداد' };
-  const rows = [{ date: from || '—', kindAr: 'رصيد افتتاحي', debit: 0, credit: 0, balance: st.opening }, ...st.rows.map((r) => ({ ...r, kindAr: KIND[r.kind] }))];
-  const report = { farm: s.farmName, title: `كشف حساب العميل - ${customer.name}`, from, to, currency: 'SYP', columns: [{ key: 'date', label: 'التاريخ', type: 'date' }, { key: 'kindAr', label: 'البيان' }, { key: 'qty', label: 'الكمية (لتر)', type: 'number' }, { key: 'debit', label: 'مدين (مبيعات)', type: 'money' }, { key: 'credit', label: 'دائن (مدفوعات)', type: 'money' }, { key: 'balance', label: 'الرصيد', type: 'money' }],
-    rows, totals: { debit: st.totalDebit, credit: st.totalCredit }, summary: [{ label: 'الرصيد الافتتاحي', value: st.opening }, { label: 'الرصيد الختامي (سالب = رصيد دائن للعميل)', value: st.closing }] };
+  // الرصيد: موجب = العميل عليه لنا (مدين) · سالب = للعميل رصيد عندنا (دائن)
+  const side = (b) => (b > 0.004 ? `عليه ${fmt(b)}` : b < -0.004 ? `له ${fmt(-b)}` : 'متزن');
+  const tone = (b) => (b > 0.004 ? 'text-rose-600' : b < -0.004 ? 'text-sky-700' : 'text-slate-500');
+  const agNo = (id) => ags.find((a) => a.id === id)?.number || '';
+  const describe = (r) => {
+    if (r.kind === 'delivery') return `تسليم ${fmt(r.qty)} لتر${agNo(r.ref) ? ' — ' + agNo(r.ref) : ''}`;
+    const p = pays.find((x) => x.id === r.ref); const no = agNo(p?.agreementId);
+    return `${r.kind === 'refund' ? 'استرداد للعميل' : 'دفعة من العميل'}${no ? ' — ' + no : ''}${p?.note ? ' (' + p.note + ')' : ''}`;
+  };
+  const rows = [{ id: 'open', date: from || '—', desc: 'رصيد افتتاحي', qty: '', price: '', debit: 0, credit: 0, balance: st.opening }, ...st.rows.map((r, i) => ({ id: i, date: r.date, desc: describe(r), qty: r.kind === 'delivery' ? r.qty : '', price: r.kind === 'delivery' && r.qty ? round2(r.debit / r.qty) : '', debit: r.debit, credit: r.credit, balance: r.balance }))]
+    .map((r) => ({ ...r, balLabel: side(r.balance) }));
+  const closingTxt = st.closing > 0.004 ? `العميل عليه لنا ${fmt(st.closing)} ل.س` : st.closing < -0.004 ? `للعميل عندنا ${fmt(-st.closing)} ل.س (رصيد دائن)` : 'الحساب متزن — لا يوجد رصيد';
+  const report = { farm: s.farmName, title: `كشف حساب العميل - ${customer.name}`, from, to, currency: 'SYP', columns: [{ key: 'date', label: 'التاريخ', type: 'date' }, { key: 'desc', label: 'البيان' }, { key: 'qty', label: 'الكمية (لتر)', type: 'number' }, { key: 'price', label: 'سعر اللتر', type: 'money' }, { key: 'debit', label: 'مدين (عليه — مبيعات)', type: 'money' }, { key: 'credit', label: 'دائن (له — مدفوعات)', type: 'money' }, { key: 'balance', label: 'الرصيد', type: 'money' }, { key: 'balLabel', label: 'عليه / له' }],
+    rows, totals: { debit: st.totalDebit, credit: st.totalCredit }, summary: [{ label: 'الرصيد الافتتاحي', value: st.opening }, { label: 'الرصيد الختامي (موجب = العميل عليه لنا، سالب = له عندنا)', value: st.closing }, { label: 'الخلاصة', value: closingTxt }] };
+  const ui = [{ key: 'date', label: 'التاريخ' }, { key: 'desc', label: 'البيان' }, { key: 'qty', label: 'الكمية (لتر)', render: (r) => (r.qty === '' ? '—' : <span className="num">{fmt(r.qty)}</span>) }, { key: 'price', label: 'سعر اللتر', render: (r) => (r.price === '' ? '—' : <span className="num">{fmt(r.price)}</span>) },
+    { key: 'debit', label: 'مدين (عليه)', render: (r) => (r.debit ? <span className="num font-bold text-rose-600">{fmt(r.debit)}</span> : '—') }, { key: 'credit', label: 'دائن (له)', render: (r) => (r.credit ? <span className="num font-bold text-emerald-700">{fmt(r.credit)}</span> : '—') },
+    { key: 'balance', label: 'الرصيد', render: (r) => <b className={`${tone(r.balance)}`} dir="rtl">{r.balLabel}</b> }];
   return (
     <Modal open onClose={onClose} title={report.title} wide>
-      <div className="mb-3 flex flex-wrap items-end gap-2"><input type="date" className="input w-40" value={from} onChange={(e) => setFrom(e.target.value)} /><input type="date" className="input w-40" value={to} onChange={(e) => setTo(e.target.value)} /><ExportButtons report={report} /></div>
-      <Table columns={report.columns.map((c) => ({ ...c, render: c.type === 'money' ? (r) => <span className="num">{fmt(r[c.key])}</span> : undefined }))} rows={rows}
-        footer={<tr><td className="px-3 py-2" colSpan={3}>الإجمالي</td><td className="px-3 py-2 num">{fmt(st.totalDebit)}</td><td className="px-3 py-2 num">{fmt(st.totalCredit)}</td><td className="px-3 py-2 num">{fmt(st.closing)}</td></tr>} />
+      <div className={`mb-3 rounded-xl p-3 text-center text-base font-extrabold sm:text-lg ${st.closing > 0.004 ? 'bg-rose-50 text-rose-700' : st.closing < -0.004 ? 'bg-sky-50 text-sky-700' : 'bg-slate-50 text-slate-600'}`}>{closingTxt}</div>
+      <div className="mb-3 grid grid-cols-3 gap-2"><Stat label="رصيد افتتاحي" value={<span className="text-base">{fmt(st.opening)}</span>} /><Stat label="مدين (مبيعات)" value={<span className="text-base">{fmt(st.totalDebit)}</span>} tone="red" /><Stat label="دائن (مدفوعات)" value={<span className="text-base">{fmt(st.totalCredit)}</span>} tone="green" /></div>
+      <div className="mb-1 text-xs text-slate-500"><b className="text-rose-600">عليه</b> = العميل مدين لنا · <b className="text-sky-700">له</b> = رصيد للعميل عندنا (دفعات زائدة / مقدّمة)</div>
+      <div className="mb-3 mt-2 grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:items-end"><label className="block"><span className="mb-1 block text-xs font-bold text-slate-500">من تاريخ</span><input type="date" dir="ltr" className="input sm:w-40" value={from} onChange={(e) => setFrom(e.target.value)} /></label><label className="block"><span className="mb-1 block text-xs font-bold text-slate-500">إلى تاريخ</span><input type="date" dir="ltr" className="input sm:w-40" value={to} onChange={(e) => setTo(e.target.value)} /></label><div className="col-span-2"><ExportButtons report={report} /></div></div>
+      <Table columns={ui} rows={rows}
+        footer={<tr><td className="px-3 py-2" colSpan={4}>الإجمالي</td><td className="px-3 py-2 num">{fmt(st.totalDebit)}</td><td className="px-3 py-2 num">{fmt(st.totalCredit)}</td><td className={`px-3 py-2 font-extrabold ${tone(st.closing)}`}>{side(st.closing)}</td></tr>} />
     </Modal>
   );
 }
@@ -71,9 +87,9 @@ function LedgerModal({ partner, onClose }) {
   return (
     <Modal open onClose={onClose} title={report.title} wide>
       <div className="mb-3 flex flex-wrap items-end gap-2">
-        <select className="input w-28" value={c} onChange={(e) => setC(e.target.value)}>{CURRENCIES.map(([v]) => <option key={v}>{v}</option>)}</select>
-        <select className="input w-44" value={type} onChange={(e) => setType(e.target.value)}><option value="">كل الأنواع</option>{LEDGER_TYPES.map((t) => <option key={t} value={t}>{LEDGER_AR[t]}</option>)}</select>
-        <input type="date" className="input w-36" value={from} onChange={(e) => setFrom(e.target.value)} /><input type="date" className="input w-36" value={to} onChange={(e) => setTo(e.target.value)} />
+        <select className="input w-full sm:w-28" value={c} onChange={(e) => setC(e.target.value)}>{CURRENCIES.map(([v]) => <option key={v}>{v}</option>)}</select>
+        <select className="input w-full sm:w-44" value={type} onChange={(e) => setType(e.target.value)}><option value="">كل الأنواع</option>{LEDGER_TYPES.map((t) => <option key={t} value={t}>{LEDGER_AR[t]}</option>)}</select>
+        <input type="date" className="input w-full sm:w-36" value={from} onChange={(e) => setFrom(e.target.value)} /><input type="date" className="input w-full sm:w-36" value={to} onChange={(e) => setTo(e.target.value)} />
         <ExportButtons report={report} />{can('create') && <button className="btn btn-primary" onClick={() => setMv(true)}>تسجيل حركة</button>}
       </div>
       <Table columns={report.columns.map((x) => ({ ...x, render: x.type === 'money' ? (r) => <span className="num">{fmt(r[x.key])}</span> : undefined }))} rows={rows} empty={<Empty title="لا توجد حركات" />} />
@@ -187,7 +203,7 @@ export function Inventory() {
   const items = useCol('stockItems').rows.filter((i) => !i.voided); const mv = useCol('stockMovements').rows.filter((m) => !m.voided);
   const level = (id) => round2(mv.filter((m) => m.itemId === id).reduce((a, m) => a + (m.type === 'in' ? 1 : -1) * Number(m.qty), 0));
   return (<div>
-    <div className="mb-3 flex gap-2"><button className={`btn ${tab === 'mov' ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setTab('mov')}>الحركات</button><button className={`btn ${tab === 'items' ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setTab('items')}>الأصناف</button></div>
+    <div className="mb-3 flex flex-wrap gap-2"><button className={`btn ${tab === 'mov' ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setTab('mov')}>الحركات</button><button className={`btn ${tab === 'items' ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setTab('items')}>الأصناف</button></div>
     {items.length > 0 && <div className="mb-4 grid gap-3 sm:grid-cols-4">{items.map((i) => { const l = level(i.id); return <Stat key={i.id} label={i.name} value={`${fmt(l)} ${i.unit || ''}`} sub={Number(i.minLevel) && l < Number(i.minLevel) ? '⚠ أقل من حد التنبيه' : undefined} tone={Number(i.minLevel) && l < Number(i.minLevel) ? 'red' : 'green'} />; })}</div>}
     {tab === 'items' ? <CrudPage title="أصناف المخزون" col="stockItems" searchKeys={['name']} fields={[{ name: 'name', label: 'الصنف', type: 'text', required: true }, { name: 'unit', label: 'الوحدة (كغ، كيس…)', type: 'text', required: true }, { name: 'minLevel', label: 'حد التنبيه', type: 'number', min: 0 }]} cols={() => [{ key: 'name', label: 'الصنف' }, { key: 'unit', label: 'الوحدة' }, { key: 'minLevel', label: 'حد التنبيه' }]} />
       : <CrudPage title="الأعلاف والمخزون" subtitle="حركات الوارد والصادر" col="stockMovements" searchKeys={['itemName']} fields={[{ name: 'itemId', label: 'الصنف', type: 'rel', col: 'stockItems', required: true }, { name: 'date', label: 'التاريخ', type: 'date', required: true }, { name: 'type', label: 'النوع', type: 'select', required: true, options: [['in', 'وارد'], ['out', 'صادر / استهلاك']] }, { name: 'qty', label: 'الكمية', type: 'number', required: true, positive: true }, { name: 'notes', label: 'ملاحظات', type: 'text' }]}

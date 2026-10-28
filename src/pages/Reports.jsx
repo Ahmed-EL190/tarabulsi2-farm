@@ -49,8 +49,8 @@ export default function Reports() {
     const allSales = F.salesLedger({ deliveries: d.milkDeliveries, agreements: d.milkSales, animalEvents: d.animalEvents, cashTransactions: d.cashTransactions, customers: d.customers }, { from, to, currency: c })
       .filter((r) => (!saleType || r.kind === saleType) && (!customer || r.party === cust(customer)));
     const stot = F.salesTotals(allSales);
-    R.sales = { title: 'تقرير المبيعات (حليب + حيوانات + أخرى)', columns: [{ key: 'date', label: 'التاريخ', type: D }, { key: 'kindAr', label: 'نوع البيع' }, { key: 'ref', label: 'المرجع' }, { key: 'party', label: 'العميل / المشتري' }, { key: 'description', label: 'البيان' }, { key: 'qty', label: 'الكمية', type: N }, { key: 'amount', label: 'المبلغ', type: M }],
-      rows: allSales.map((r) => ({ ...r, kindAr: SALE_KIND_AR[r.kind] })), sumKeys: ['amount'],
+    R.sales = { title: 'تقرير المبيعات (حليب + حيوانات + أخرى)', columns: [{ key: 'date', label: 'التاريخ', type: D }, { key: 'kindAr', label: 'نوع البيع' }, { key: 'ref', label: 'المرجع' }, { key: 'party', label: 'العميل / المشتري' }, { key: 'description', label: 'البيان' }, { key: 'qty', label: 'الكمية', type: N }, { key: 'price', label: 'سعر اللتر', type: M }, { key: 'amount', label: 'المبلغ', type: M }],
+      rows: allSales.map((r) => ({ ...r, kindAr: SALE_KIND_AR[r.kind], price: r.kind === 'milk' && r.qty ? F.round2(r.amount / r.qty) : '' })), sumKeys: ['amount'],
       summary: [{ label: 'مبيعات الحليب', value: stot.byKind.milk[c] || 0 }, { label: 'مبيعات الحيوانات', value: stot.byKind.animal[c] || 0 }, { label: 'إيرادات أخرى', value: stot.byKind.other[c] || 0 }, { label: 'إجمالي المبيعات', value: stot.total[c] || 0 }] };
     R.payments = { title: 'تقرير دفعات العملاء', columns: [{ key: 'date', label: 'التاريخ', type: D }, { key: 'cust', label: 'العميل' }, { key: 'kind', label: 'النوع' }, { key: 'amount', label: 'المبلغ', type: M }],
       rows: d.customerPayments.filter((x) => inR(x.date) && x.currency === c && (!customer || x.customerId === customer)).map((x) => ({ date: x.date, cust: cust(x.customerId), kind: x.type === 'refund' ? 'استرداد' : x.kind === 'advance' ? 'دفعة مقدمة' : 'دفعة', amount: x.type === 'refund' ? -Number(x.amount) : Number(x.amount) })).sort((a, b) => a.date.localeCompare(b.date)), sumKeys: ['amount'] };
@@ -107,7 +107,7 @@ export default function Reports() {
       <Card title={def.title}>
         <div className="mb-2 text-xs text-slate-500">{s.farmName} · {from} → {to} · العملة: {c} · أُنشئ: {new Date().toLocaleString('en-GB')}</div>
         <Table rows={rows.map((r, i) => ({ id: i, ...r }))} empty={<Empty title="لا توجد بيانات في هذه الفترة" hint="سجّل معاملات حقيقية لتظهر في التقرير." />}
-          columns={def.columns.map((x) => ({ ...x, render: x.type === M || x.type === N ? (r) => <span className="num">{fmt(r[x.key])}</span> : undefined }))}
+          columns={def.columns.map((x) => ({ ...x, render: x.type === M || x.type === N ? (r) => (r[x.key] === '' ? '—' : <span className="num">{fmt(r[x.key])}</span>) : undefined }))}
           footer={totals && <tr>{def.columns.map((x, i) => <td key={x.key} className="px-3 py-2">{i === 0 ? 'الإجمالي' : totals[x.key] !== undefined ? <span className="num">{fmt(totals[x.key])}</span> : ''}</td>)}</tr>} />
         {def.summary && <div className="mt-3 space-y-1 text-sm font-bold">{def.summary.map((x) => <div key={x.label}>{x.label}: <span className="num">{fmt(x.value)}</span></div>)}</div>}
       </Card>
