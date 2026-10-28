@@ -185,3 +185,14 @@ describe('all sales + animal profile', () => {
     expect(p.treatmentCost).toBe(500); expect(p.saleResult).toBe(6000); expect(p.ageMonths).toBe(24 + 5);
   });
 });
+
+describe('pregnant purchase: days to calving', () => {
+  it('counts down from the purchase date; stops after a birth', () => {
+    const a = { id: 'A1', tag: 'A1', acquisitionDate: '2026-01-01', pregnant: 'yes', daysToBirth: 60 };
+    const p = F.animalProfile(a, {}, '2026-02-01');
+    expect(p.expectedBirthDate).toBe('2026-03-02'); expect(p.daysToCalving).toBe(29);
+    expect(F.animalProfile(a, {}, '2026-03-10').daysToCalving).toBe(-8);
+    expect(F.animalProfile(a, { events: [{ type: 'birth', motherId: 'A1', date: '2026-03-01' }] }, '2026-03-10').daysToCalving).toBe(null);
+    expect(F.animalProfile({ ...a, pregnant: 'no' }, {}, '2026-02-01').daysToCalving).toBe(null);
+  });
+});

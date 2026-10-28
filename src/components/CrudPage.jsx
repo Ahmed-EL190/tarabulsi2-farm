@@ -44,7 +44,8 @@ export function FieldInput({ f, register, errors, setValue, getValues }) {
 /** Reusable form modal. Used by CrudPage and by custom pages. */
 export function FormModal({ open, onClose, title, fields, defaults, onSubmit, submitLabel = 'حفظ' }) {
   const schema = useMemo(() => buildSchema(fields), [fields]);
-  const { register, handleSubmit, setValue, getValues, formState: { errors, isSubmitting }, reset } = useForm({ resolver: zodResolver(schema), values: defaults });
+  const { register, handleSubmit, setValue, getValues, watch, formState: { errors, isSubmitting }, reset } = useForm({ resolver: zodResolver(schema), values: defaults });
+  const vals = watch(); const shown = fields.filter((f) => !f.showIf || f.showIf(vals));
   const [err, setErr] = useState('');
   const go = handleSubmit(async (d) => {
     setErr('');
@@ -54,7 +55,7 @@ export function FormModal({ open, onClose, title, fields, defaults, onSubmit, su
     <Modal open={open} onClose={onClose} title={title} wide={fields.length > 6}>
       <form onSubmit={go} className="space-y-3">
         <Toast msg={err} />
-        <div className="grid gap-3 sm:grid-cols-2">{fields.map((f) => <div key={f.name} className={f.type === 'textarea' ? 'sm:col-span-2' : ''}><FieldInput f={f} register={register} errors={errors} setValue={setValue} getValues={getValues} /></div>)}</div>
+        <div className="grid gap-3 sm:grid-cols-2">{shown.map((f) => <div key={f.name} className={f.type === 'textarea' ? 'sm:col-span-2' : ''}><FieldInput f={f} register={register} errors={errors} setValue={setValue} getValues={getValues} /></div>)}</div>
         <div className="flex justify-end gap-2 pt-2"><button type="button" className="btn btn-ghost" onClick={onClose}>إلغاء</button><button className="btn btn-primary" disabled={isSubmitting}>{submitLabel}</button></div>
       </form>
     </Modal>
@@ -63,7 +64,7 @@ export function FormModal({ open, onClose, title, fields, defaults, onSubmit, su
 
 /** Config-driven list + add/edit/void page.
  * props: title, subtitle, col, fields, cols(ctx)=>[], defaults, searchKeys, create(user,data), useCtx(), summary(rows,ctx), actions(row,ctx), emptyHint, filter(row) */
-export default function CrudPage({ title, subtitle, col, fields, cols, defaults = {}, searchKeys = [], create, useCtx, summary, rowActions, emptyHint, filter, noEdit, extraHeader, createOnlyFields = [] }) {
+export default function CrudPage({ title, subtitle, col, fields, cols, defaults = {}, searchKeys = [], create, useCtx, summary, rowActions, emptyHint, filter, noEdit, extraHeader, createOnlyFields = [], noAdd }) {
   const { user, can } = useAuth();
   const { rows, loading } = useCol(col);
   const ctx = useCtx ? useCtx() : {};
@@ -82,15 +83,15 @@ export default function CrudPage({ title, subtitle, col, fields, cols, defaults 
     <div>
       <PageHeader title={title} subtitle={subtitle}>
         {extraHeader}
-        {can('create') && <button className="btn btn-primary" onClick={() => { setEdit(null); setOpen(true); }}><Plus size={16} />إضافة</button>}
+        {can('create') && !noAdd && <button className="btn btn-primary" onClick={() => { setEdit(null); setOpen(true); }}><Plus size={16} />إضافة</button>}
       </PageHeader>
       {summary && summary(shown, ctx)}
       <Card className="mt-4">
         <div className="mb-3 max-w-xs">{searchKeys.length > 0 && <SearchBox value={q} onChange={setQ} />}</div>
         {loading ? <div className="p-6 text-center text-slate-400">جارٍ التحميل…</div> :
-          <Table columns={columns} rows={shown} empty={<Empty title="لا توجد سجلات بعد" hint={emptyHint || 'ابدأ بإضافة أول سجل حقيقي.'}>{can('create') && <button className="btn btn-primary mt-2" onClick={() => { setEdit(null); setOpen(true); }}><Plus size={16} />إضافة أول سجل</button>}</Empty>} />}
+          <Table columns={columns} rows={shown} empty={<Empty title="لا توجد سجلات بعد" hint={emptyHint || 'ابدأ بإضافة أول سجل حقيقي.'}>{can('create') && !noAdd && <button className="btn btn-primary mt-2" onClick={() => { setEdit(null); setOpen(true); }}><Plus size={16} />إضافة أول سجل</button>}</Empty>} />}
       </Card>
-      <FormModal open={open} onClose={() => setOpen(false)} title={edit ? 'تعديل' : 'إضافة'} fields={formFields}
+      <FormModal open={open && !(noAdd && !edit)} onClose={() => setOpen(false)} title={edit ? 'تعديل' : 'إضافة'} fields={formFields}
         defaults={edit ? Object.fromEntries(formFields.map((f) => [f.name, edit[f.name] ?? ''])) : Object.fromEntries(formFields.map((f) => [f.name, defaults[f.name] ?? (f.type === 'date' ? today() : f.default ?? '')]))}
         onSubmit={onSubmit} />
     </div>

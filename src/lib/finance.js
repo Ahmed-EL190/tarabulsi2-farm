@@ -283,6 +283,12 @@ export function animalProfile(animal, { events = [], production = [], expenses =
   const milkTotal = round2(milk.reduce((s, p) => s + n(p.liters), 0));
   const milkDays = new Set(milk.filter((p) => n(p.liters) > 0).map((p) => p.date)).size;
   const treatmentCost = round2(expenses.filter((e) => !e.voided && e.animalId === animal.id && e.category === 'vet').reduce((s, e) => s + n(e.amount), 0));
-  return { ageMonths, milkTotal, milkDays, milkAvg: milkDays ? round2(milkTotal / milkDays) : 0, treatmentCost,
+  let expectedBirthDate = null, daysToCalving = null;
+  if (animal.pregnant === 'yes' && animal.daysToBirth !== undefined && animal.daysToBirth !== '' && animal.daysToBirth !== null && animal.acquisitionDate) {
+    const dt = new Date(animal.acquisitionDate); dt.setUTCDate(dt.getUTCDate() + n(animal.daysToBirth)); expectedBirthDate = dt.toISOString().slice(0, 10);
+    const calved = events.some((e) => !e.voided && e.type === 'birth' && e.motherId === animal.id && e.date >= animal.acquisitionDate);
+    if (!calved && !sale) daysToCalving = Math.round((new Date(expectedBirthDate) - new Date(asOf)) / 86400000); // negative = overdue
+  }
+  return { expectedBirthDate, daysToCalving, ageMonths, milkTotal, milkDays, milkAvg: milkDays ? round2(milkTotal / milkDays) : 0, treatmentCost,
     salePrice: sale ? n(sale.value) : null, saleDate: sale?.date || null, saleResult: sale ? round2(n(sale.value) - n(animal.acquisitionCost)) : null };
 }

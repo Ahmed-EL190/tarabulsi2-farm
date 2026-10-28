@@ -17,7 +17,13 @@ function useData() {
 
 export default function Reports() {
   const s = useSettings(); const d = useData();
-  const [kind, setKind] = useState('farm'); const [from, setFrom] = useState(`${new Date().getFullYear()}-01-01`); const [to, setTo] = useState(new Date().toISOString().slice(0, 10));
+  const todayIso = new Date().toISOString().slice(0, 10);
+  const [kind, setKind] = useState('farm'); const [mode, setMode] = useState('range');
+  const [rFrom, setRFrom] = useState(`${new Date().getFullYear()}-01-01`); const [rTo, setRTo] = useState(todayIso);
+  const [day, setDay] = useState(todayIso); const [month, setMonth] = useState(todayIso.slice(0, 7)); const [year, setYear] = useState(String(new Date().getFullYear()));
+  // Period filter: a specific day, a whole month, a whole year, or a custom range. All reports use from/to.
+  const lastDay = (ym) => { const [y, m] = ym.split('-').map(Number); return `${ym}-${String(new Date(y, m, 0).getDate()).padStart(2, '0')}`; };
+  const [from, to] = mode === 'day' ? [day, day] : mode === 'month' ? [`${month}-01`, lastDay(month)] : mode === 'year' ? [`${year}-01-01`, `${year}-12-31`] : [rFrom, rTo];
   const [c, setC] = useState('SYP'); const [g, setG] = useState('month'); const [partner, setPartner] = useState(''); const [customer, setCustomer] = useState(''); const [cat, setCat] = useState(''); const [saleType, setSaleType] = useState('');
   const inR = (x) => (!from || x >= from) && (!to || x <= to);
   const cust = (id) => d.customers.find((x) => x.id === id)?.name || '—'; const part = (id) => d.partners.find((x) => x.id === id)?.name || '—';
@@ -55,6 +61,8 @@ export default function Reports() {
     const cf = F.cashFlowSummary(d.cashTransactions, { from, to, currency: c });
     R.receipts = { title: 'المقبوضات والمدفوعات النقدية (حسب النوع، بدون التحويلات)', columns: [{ key: 'kind', label: 'الاتجاه' }, { key: 'typeAr', label: 'النوع' }, { key: 'amount', label: 'المبلغ', type: M }], rows: [...Object.entries(cf.inflow).map(([k, v]) => ({ kind: 'وارد', typeAr: CASH_AR[k] || k, amount: v })), ...Object.entries(cf.outflow).map(([k, v]) => ({ kind: 'صادر', typeAr: CASH_AR[k] || k, amount: v }))], summary: [{ label: 'إجمالي الوارد', value: cf.totalIn }, { label: 'إجمالي الصادر', value: cf.totalOut }, { label: 'الصافي', value: cf.net }] };
     R.cashflow = { title: 'التدفق النقدي', columns: [{ key: 'item', label: 'البند' }, { key: 'amount', label: 'المبلغ', type: M }], rows: [{ item: 'إجمالي الوارد', amount: cf.totalIn }, { item: 'إجمالي الصادر', amount: -cf.totalOut }], totals: { amount: cf.net }, summary: [{ label: 'صافي التدفق', value: cf.net }] };
+    R.expenseDetails = { title: 'تفاصيل المصروفات (يومياً)', columns: [{ key: 'date', label: 'التاريخ', type: D }, { key: 'catAr', label: 'الفئة' }, { key: 'description', label: 'الوصف' }, { key: 'supplierName', label: 'المورّد' }, { key: 'amount', label: 'المستحق', type: M }, { key: 'paid', label: 'المدفوع', type: M }, { key: 'out', label: 'المتبقي', type: M }],
+      rows: exps.slice().sort((a, b) => a.date.localeCompare(b.date)).map((e) => { const p = F.expensePosition(e, d.expensePayments); return { ...e, catAr: catLabel(e.category), amount: Number(e.amount), paid: p.paid, out: p.outstanding }; }), sumKeys: ['amount', 'paid', 'out'] };
     const byCat = {}; exps.forEach((e) => { byCat[e.category] = (byCat[e.category] || 0) + Number(e.amount); });
     R.expenses = { title: 'المصروفات حسب الفئة', columns: [{ key: 'cat', label: 'الفئة' }, { key: 'amount', label: 'المبلغ', type: M }], rows: Object.entries(byCat).map(([k, v]) => ({ cat: catLabel(k), amount: F.round2(v) })), sumKeys: ['amount'] };
     R.partners = { title: 'كشوف حسابات الشركاء (موحّد)', columns: [{ key: 'name', label: 'الشريك' }, { key: 'cap', label: 'رأس مال', type: M }, { key: 'loan', label: 'قروض', type: M }, { key: 'wd', label: 'سحوبات', type: M }, { key: 'dist', label: 'توزيعات', type: M }, { key: 'closing', label: 'الرصيد الختامي', type: M }],
@@ -78,13 +86,17 @@ export default function Reports() {
   const rows = def.rows;
   const totals = def.totals || (def.sumKeys ? Object.fromEntries(def.sumKeys.map((k) => [k, sum(rows, k)])) : undefined);
   const report = { farm: s.farmName, title: def.title, from, to, currency: c, columns: def.columns, rows, totals, summary: def.summary };
-  const LIST = [['farm', 'تقرير المزرعة'], ['production', 'إنتاج الحليب'], ['sales', 'كل المبيعات (حليب + حيوانات + أخرى)'], ['payments', 'دفعات العملاء'], ['credits', 'دفعات مقدمة / أرصدة دائنة'], ['receivables', 'ذمم مدينة'], ['cashbook', 'دفتر الصندوق'], ['receipts', 'مقبوضات ومدفوعات'], ['expenses', 'مصروفات حسب الفئة'], ['partners', 'حسابات الشركاء'], ['capital', 'رأس مال الشركاء'], ['loans', 'قروض الشركاء'], ['pfe', 'مصروفات مدفوعة من شركاء'], ['settlements', 'تسويات وتوزيعات'], ['animals', 'جرد المواشي'], ['animalMoves', 'حركة المواشي'], ['payables', 'ذمم دائنة'], ['pl', 'أرباح وخسائر'], ['cashflow', 'تدفق نقدي']];
+  const LIST = [['farm', 'تقرير المزرعة'], ['production', 'إنتاج الحليب'], ['sales', 'كل المبيعات (حليب + حيوانات + أخرى)'], ['payments', 'دفعات العملاء'], ['credits', 'دفعات مقدمة / أرصدة دائنة'], ['receivables', 'ذمم مدينة'], ['cashbook', 'دفتر الصندوق'], ['receipts', 'مقبوضات ومدفوعات'], ['expenseDetails', 'تفاصيل المصروفات (يومياً)'], ['expenses', 'مصروفات حسب الفئة'], ['partners', 'حسابات الشركاء'], ['capital', 'رأس مال الشركاء'], ['loans', 'قروض الشركاء'], ['pfe', 'مصروفات مدفوعة من شركاء'], ['settlements', 'تسويات وتوزيعات'], ['animals', 'جرد المواشي'], ['animalMoves', 'حركة المواشي'], ['payables', 'ذمم دائنة'], ['pl', 'أرباح وخسائر'], ['cashflow', 'تدفق نقدي']];
   return (
     <div>
       <PageHeader title="التقارير"><ExportButtons report={report} /></PageHeader>
       <Card className="mb-4"><div className="grid gap-2 sm:grid-cols-3 xl:grid-cols-8">
         <select className="input sm:col-span-3 xl:col-span-2" value={kind} onChange={(e) => setKind(e.target.value)}>{LIST.map(([k, l]) => <option key={k} value={k}>{l}</option>)}</select>
-        <input type="date" className="input" value={from} onChange={(e) => setFrom(e.target.value)} /><input type="date" className="input" value={to} onChange={(e) => setTo(e.target.value)} />
+        <select className="input" value={mode} onChange={(e) => setMode(e.target.value)}><option value="range">فترة مخصصة</option><option value="day">يوم محدد</option><option value="month">شهر محدد</option><option value="year">سنة محددة</option></select>
+        {mode === 'range' && <><input type="date" className="input" value={rFrom} onChange={(e) => setRFrom(e.target.value)} /><input type="date" className="input" value={rTo} onChange={(e) => setRTo(e.target.value)} /></>}
+        {mode === 'day' && <input type="date" className="input sm:col-span-2" value={day} onChange={(e) => setDay(e.target.value)} />}
+        {mode === 'month' && <input type="month" className="input sm:col-span-2" value={month} onChange={(e) => setMonth(e.target.value)} />}
+        {mode === 'year' && <input type="number" min="2000" max="2100" className="input sm:col-span-2" value={year} onChange={(e) => setYear(e.target.value)} />}
         <select className="input" value={c} onChange={(e) => setC(e.target.value)}>{CURRENCIES.map(([v]) => <option key={v}>{v}</option>)}</select>
         <select className="input" value={g} onChange={(e) => setG(e.target.value)}><option value="day">يومي</option><option value="week">أسبوعي</option><option value="month">شهري</option><option value="year">سنوي</option></select>
         <select className="input" value={partner} onChange={(e) => setPartner(e.target.value)}><option value="">كل الشركاء</option>{d.partners.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}</select>
