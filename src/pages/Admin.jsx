@@ -49,7 +49,7 @@ export function Settings() {
           <Field label="اسم المزرعة"><input className="input" value={v.farmName} onChange={(e) => set('farmName', e.target.value)} /></Field>
           <Field label="العملة الأساسية"><select className="input" value={v.baseCurrency} onChange={(e) => set('baseCurrency', e.target.value)}>{CURRENCIES.map(([c, l]) => <option key={c} value={c}>{l}</option>)}</select></Field>
           <Field label="سعر الصرف USD → SYP (للتحويل الصريح فقط — لا تُجمع العملات تلقائياً)"><input className="input" type="number" dir="ltr" value={rates['USD->SYP'] || ''} onChange={(e) => set('rates', { ...rates, 'USD->SYP': Number(e.target.value) })} /></Field>
-          <label className="flex items-center gap-2 pt-6 text-sm font-bold"><input type="checkbox" checked={!!v.animalPurchaseAsExpense} onChange={(e) => set('animalPurchaseAsExpense', e.target.checked)} />احتساب شراء الحيوانات كمصروف في الأرباح (كما في ملف Excel الأصلي)</label>
+          <label className="flex items-start gap-2 text-sm font-bold sm:items-center sm:pt-6"><input type="checkbox" checked={!!v.animalPurchaseAsExpense} onChange={(e) => set('animalPurchaseAsExpense', e.target.checked)} />احتساب شراء الحيوانات كمصروف في الأرباح (كما في ملف Excel الأصلي)</label>
         </div>
         {can('manageUsers') ? <button className="btn btn-primary mt-4" onClick={save}>حفظ</button> : <p className="mt-3 text-sm text-slate-500">التعديل لمدير النظام فقط.</p>}
       </Card>
@@ -65,8 +65,8 @@ export function Audit() {
   return (
     <div>
       <PageHeader title="سجل التدقيق" subtitle="كل إنشاء وتعديل وإلغاء مسجّل ولا يمكن تعديله" />
-      <Card><input className="input mb-3 max-w-xs" placeholder="بحث" value={q} onChange={(e) => setQ(e.target.value)} />
-        <Table rows={shown} empty={<Empty title="لا توجد أحداث" />} columns={[{ key: 'at', label: 'الوقت', render: (r) => (r.at?.toDate ? r.at.toDate().toLocaleString('en-GB') : '…') }, { key: 'userName', label: 'المستخدم' }, { key: 'action', label: 'الإجراء' }, { key: 'collection', label: 'المجموعة' }, { key: 'docId', label: 'المعرّف' }, { key: 'summary', label: 'التفاصيل', render: (r) => <span className="line-clamp-1 max-w-xs text-xs text-slate-500">{r.summary}</span> }]} /></Card>
+      <Card><input className="input mb-3 w-full sm:max-w-xs" placeholder="بحث" value={q} onChange={(e) => setQ(e.target.value)} />
+        <Table rows={shown} empty={<Empty title="لا توجد أحداث" />} columns={[{ key: 'at', label: 'الوقت', render: (r) => (r.at?.toDate ? r.at.toDate().toLocaleString('en-GB') : '…') }, { key: 'userName', label: 'المستخدم' }, { key: 'action', label: 'الإجراء' }, { key: 'collection', label: 'المجموعة' }, { key: 'docId', label: 'المعرّف', hideMobile: true }, { key: 'summary', label: 'التفاصيل', render: (r) => <span className="line-clamp-1 max-w-xs text-xs text-slate-500">{r.summary}</span> }]} /></Card>
     </div>
   );
 }

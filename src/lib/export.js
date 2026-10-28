@@ -1,8 +1,8 @@
-import ExcelJS from 'exceljs';
 
 /** report: { title, farm, from, to, currency, columns:[{key,label,type:'text'|'date'|'number'|'money',width}], rows:[], totals:{key:number}, summary:[{label,value}] }
  *  Totals in files are computed from the same rows shown in the app, so exports always match the screen. */
 export async function exportExcel(report) {
+  const ExcelJS = (await import('exceljs')).default; // يُحمَّل فقط عند الضغط على Excel
   const wb = new ExcelJS.Workbook();
   wb.creator = report.farm; wb.created = new Date();
   const ws = wb.addWorksheet(report.title.slice(0, 31).replace(/[\\/?*[\]:]/g, ' '), { views: [{ rightToLeft: true, state: 'frozen', ySplit: 6 }], pageSetup: { orientation: 'landscape', fitToPage: true, fitToWidth: 1, fitToHeight: 0, paperSize: 9 } });

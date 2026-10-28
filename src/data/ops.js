@@ -133,19 +133,25 @@ export async function voidCustomerPayment(user, pay, cashTxs, reason) {
   cashTxs.filter((t) => t.customerPaymentId === pay.id && !t.voided).forEach((t) => ops.push({ col: 'cashTransactions', id: t.id, merge: true, data: voidData(reason), action: 'void' }));
   return commit(user, ops, 'void');
 }
-/** تعديل مصروف. لو تغيّر تاريخه تتبعه الدفعات التي كانت بنفس تاريخه (حركة الصندوق ودفتر الشريك أيضاً). */
+/** تعديل مصروف. التاريخ: الدفعات اللي بنفس تاريخه تتبعه. المبلغ: لو المصروف مدفوع بالكامل بدفعة واحدة، الدفعة (وحركة الصندوق/دفتر الشريك) تتبع المبلغ الجديد. */
 export async function updateExpenseSynced(user, expense, data, { pays = [], cash = [], ledger = [] } = {}) {
   const ops = [{ col: 'expenses', id: expense.id, merge: true, data }];
   const mine = pays.filter((p) => p.expenseId === expense.id && !p.voided);
-  const dateChanged = data.date && data.date !== expense.date;
+  const dateChanged = !!data.date && data.date !== expense.date;
+  const oldAmt = Number(expense.amount); const newAmt = data.amount !== undefined ? Number(data.amount) : oldAmt;
+  const paid = r2(mine.reduce((a, p) => a + Number(p.amount || 0), 0));
+  const amountChanged = newAmt !== oldAmt;
+  const syncSingle = amountChanged && mine.length === 1 && Math.abs(paid - oldAmt) < 0.005; // مدفوع كاملاً بدفعة واحدة
+  if (amountChanged && !syncSingle && paid > newAmt + 1e-9) throw new Error(`المبلغ الجديد (${r2(newAmt)}) أقل من المدفوع فعلاً (${paid}). عدّل أو ألغِ الدفعات أولاً من أيقونة «الدفعات».`);
   for (const p of mine) {
-    const follow = dateChanged && p.date === expense.date;
-    if (follow) ops.push({ col: 'expensePayments', id: p.id, merge: true, data: { date: data.date } });
+    const followDate = dateChanged && p.date === expense.date;
+    const patch = {}; if (followDate) patch.date = data.date; if (syncSingle) patch.amount = newAmt;
+    if (Object.keys(patch).length) ops.push({ col: 'expensePayments', id: p.id, merge: true, data: patch });
     for (const t of cash.filter((t) => t.expensePaymentId === p.id && !t.voided)) {
-      const patch = {}; if (follow) patch.date = data.date; if (data.description !== undefined && data.description !== expense.description) patch.description = data.description;
-      if (Object.keys(patch).length) ops.push({ col: 'cashTransactions', id: t.id, merge: true, data: patch });
+      const cp = { ...patch }; if (data.description !== undefined && data.description !== expense.description) cp.description = data.description;
+      if (Object.keys(cp).length) ops.push({ col: 'cashTransactions', id: t.id, merge: true, data: cp });
     }
-    if (follow) for (const t of ledger.filter((t) => t.expensePaymentId === p.id && !t.voided)) ops.push({ col: 'partnerCapitalTransactions', id: t.id, merge: true, data: { date: data.date } });
+    if (Object.keys(patch).length) for (const t of ledger.filter((t) => t.expensePaymentId === p.id && !t.voided)) ops.push({ col: 'partnerCapitalTransactions', id: t.id, merge: true, data: patch });
   }
   return commit(user, ops, 'update');
 }
@@ -166,3 +172,14 @@ export async function voidExpensePayment(user, pay, links, reason) {
   (links.ledger || []).filter((t) => t.expensePaymentId === pay.id && !t.voided).forEach((t) => ops.push({ col: 'partnerCapitalTransactions', id: t.id, merge: true, data: voidData(reason), action: 'void' }));
   return commit(user, ops, 'void');
 }
+
+// ───────────── تسليمات الحليب: تعديل / إلغاء ─────────────
+export async function updateDelivery(user, agreement, deliveries, del, d) {
+  const qty = Number(d.qty);
+  if (!(qty > 0)) throw new Error('أدخل كمية أكبر من صفر');
+  const others = deliveries.filter((x) => x.agreementId === agreement.id && !x.voided && x.id !== del.id).reduce((a, x) => a + Number(x.qty || 0), 0);
+  if (qty + others > Number(agreement.agreedQty) + 1e-9) throw new Error(`الكمية تتجاوز المتبقي (الحد الأقصى ${r2(Number(agreement.agreedQty) - others)} لتر)`);
+  const price = Number(d.pricePerLiter) > 0 ? Number(d.pricePerLiter) : Number(agreement.pricePerLiter);
+  return commit(user, [{ col: 'milkDeliveries', id: del.id, merge: true, data: { date: d.date, qty, pricePerLiter: price, notes: d.notes || '' } }], 'update');
+}
+export const voidDelivery = (user, del, reason) => commit(user, [{ col: 'milkDeliveries', id: del.id, merge: true, data: voidData(reason), action: 'void' }], 'void');

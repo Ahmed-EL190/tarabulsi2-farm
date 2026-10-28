@@ -73,7 +73,8 @@ export function SearchBox({ value, onChange, placeholder = 'بحث...' }) {
 const hasContent = (n) => n !== undefined && n !== null && n !== '' && n !== false;
 export function Table({ columns, rows, empty, footer, onRow }) {
   if (!rows.length) return empty || <Empty />;
-  const cols = columns.filter((c) => c.label !== '' || c.key === '_a');
+  const cols = columns.filter((c) => (c.label !== '' || c.key === '_a') && !c.hideMobile);
+  const allVis = columns.filter((c) => c.label !== '' || c.key === '_a');
   const footCells = footer && footer.props ? Children.toArray(footer.props.children) : [];
   return (
     <>
@@ -92,7 +93,7 @@ export function Table({ columns, rows, empty, footer, onRow }) {
         ))}
         {footCells.length > 0 && (
           <div className="rounded-xl border-2 border-slate-200 bg-slate-100 p-3 text-sm font-extrabold">
-            {(() => { let ci = 0; const vis = cols.filter((c) => c.key !== '_a'); return footCells.map((td, i) => {
+            {(() => { let ci = 0; const vis = allVis.filter((c) => c.key !== '_a'); return footCells.map((td, i) => {
               const content = td.props?.children; const label = vis[ci]?.label; ci += Number(td.props?.colSpan) || 1;
               if (i === 0) return <div key={i} className="mb-1 text-base">{content}</div>;
               if (!hasContent(content)) return null;

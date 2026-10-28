@@ -35,7 +35,7 @@ export default function Reports() {
     const exps = F.operatingExpenses(d.expenses, { from, to, currency: c }).filter((e) => !cat || e.category === cat);
     const cashTx = d.cashTransactions.filter((t) => inR(t.date) && t.currency === c);
     const pl = F.profitAndLoss({ agreements: d.milkSales, deliveries: d.milkDeliveries, expenses: d.expenses, otherIncome: d.cashTransactions.filter((t) => t.type === 'other_income'), animalSales: d.animalEvents.filter((e) => e.type === 'sale').map((e) => ({ date: e.date, amount: e.value, currency: e.currency })), animalPurchases: d.animalEvents.filter((e) => e.type === 'purchase' && Number(e.value) > 0).map((e) => ({ date: e.date, amount: e.value, currency: e.currency })), from, to, currency: c, animalPurchaseAsExpense: s.animalPurchaseAsExpense });
-    const custPos = d.customers.filter((x) => !customer || x.id === customer).map((x) => ({ id: x.id, name: x.name, ...F.customerPosition(x.id, { agreements: d.milkSales.filter((a) => a.currency === c), deliveries: d.milkDeliveries, payments: d.customerPayments }) }));
+    const custPos = d.customers.filter((x) => !customer || x.id === customer).map((x) => ({ id: x.id, name: x.name, ...F.customerPosition(x.id, { agreements: d.milkSales.filter((a) => (a.currency || 'SYP') === c), deliveries: d.milkDeliveries, payments: d.customerPayments.filter((p) => (p.currency || 'SYP') === c) }) }));
     const parts = d.partners.filter((p) => !partner || p.id === partner);
     const L = (p, o = {}) => F.partnerLedger(p.id, d.partnerCapitalTransactions, { currency: c, from, to, ...o });
     const grouped = (rows, key, cols) => { const m = {}; rows.forEach((r) => { const k = gkey(g, r.date); (m[k] ||= { period: k, ...Object.fromEntries(cols.map((x) => [x, 0])) }); cols.forEach((x) => { m[k][x] += Number(r[x]) || 0; }); }); return Object.values(m).sort((a, b) => a.period.localeCompare(b.period)); };
@@ -90,13 +90,13 @@ export default function Reports() {
   return (
     <div>
       <PageHeader title="التقارير"><ExportButtons report={report} /></PageHeader>
-      <Card className="mb-4"><div className="grid gap-2 sm:grid-cols-3 xl:grid-cols-8">
-        <select className="input sm:col-span-3 xl:col-span-2" value={kind} onChange={(e) => setKind(e.target.value)}>{LIST.map(([k, l]) => <option key={k} value={k}>{l}</option>)}</select>
+      <Card className="mb-4"><div className="grid grid-cols-2 gap-2 sm:grid-cols-3 xl:grid-cols-8">
+        <select className="input col-span-2 sm:col-span-3 xl:col-span-2" value={kind} onChange={(e) => setKind(e.target.value)}>{LIST.map(([k, l]) => <option key={k} value={k}>{l}</option>)}</select>
         <select className="input" value={mode} onChange={(e) => setMode(e.target.value)}><option value="range">فترة مخصصة</option><option value="day">يوم محدد</option><option value="month">شهر محدد</option><option value="year">سنة محددة</option></select>
         {mode === 'range' && <><input type="date" className="input" value={rFrom} onChange={(e) => setRFrom(e.target.value)} /><input type="date" className="input" value={rTo} onChange={(e) => setRTo(e.target.value)} /></>}
-        {mode === 'day' && <input type="date" className="input sm:col-span-2" value={day} onChange={(e) => setDay(e.target.value)} />}
-        {mode === 'month' && <input type="month" className="input sm:col-span-2" value={month} onChange={(e) => setMonth(e.target.value)} />}
-        {mode === 'year' && <input type="number" min="2000" max="2100" className="input sm:col-span-2" value={year} onChange={(e) => setYear(e.target.value)} />}
+        {mode === 'day' && <input type="date" className="input col-span-1 sm:col-span-2" value={day} onChange={(e) => setDay(e.target.value)} />}
+        {mode === 'month' && <input type="month" className="input col-span-1 sm:col-span-2" value={month} onChange={(e) => setMonth(e.target.value)} />}
+        {mode === 'year' && <input type="number" min="2000" max="2100" className="input col-span-1 sm:col-span-2" value={year} onChange={(e) => setYear(e.target.value)} />}
         <select className="input" value={c} onChange={(e) => setC(e.target.value)}>{CURRENCIES.map(([v]) => <option key={v}>{v}</option>)}</select>
         <select className="input" value={g} onChange={(e) => setG(e.target.value)}><option value="day">يومي</option><option value="week">أسبوعي</option><option value="month">شهري</option><option value="year">سنوي</option></select>
         <select className="input" value={partner} onChange={(e) => setPartner(e.target.value)}><option value="">كل الشركاء</option>{d.partners.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}</select>

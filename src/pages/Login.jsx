@@ -14,7 +14,7 @@ export default function Login() {
     setBusy(false);
   };
   return (
-    <div className="grid h-full place-items-center bg-gradient-to-br from-forest-950 to-forest-800 p-4" dir="rtl">
+    <div className="grid min-h-full place-items-center overflow-y-auto bg-gradient-to-br from-forest-950 to-forest-800 p-4 pb-[max(1rem,env(safe-area-inset-bottom))]" dir="rtl">
       <form onSubmit={submit} className="w-full max-w-sm space-y-3 rounded-2xl bg-white p-6 shadow-2xl">
         <div className="flex flex-col items-center gap-1 rounded-xl bg-forest-900 p-4 text-white"><CowLogo size={56} /><div className="text-xl font-extrabold">مزرعة آل الطرابلسي</div></div>
         {fbUser && !hasProfile && <Toast msg="حسابك غير مفعّل بعد. اطلب من المدير تفعيل صلاحياتك." />}

@@ -1,5 +1,5 @@
 import { NavLink, Outlet } from 'react-router-dom';
-import { useState, useEffect } from 'react';
+import { useState, useEffect, Suspense } from 'react';
 import { Home, Milk, ShoppingCart, Users, Landmark, Receipt, UserRoundCog, HandCoins, Scale, PawPrint, Baby, ArrowLeftRight, Wheat, FileText, ShieldCheck, Settings, History, Bell, Menu, Globe, UserCircle2, LogOut } from 'lucide-react';
 import { CowLogo } from './ui';
 import { useAuth } from '../data/auth';
@@ -49,7 +49,7 @@ export default function Layout() {
             <button onClick={logout} className="rounded-lg p-2 text-slate-500 hover:bg-slate-100" title="تسجيل الخروج"><LogOut size={18} /></button>
           </div>
         </header>
-        <main className="flex-1 overflow-y-auto overflow-x-hidden p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:p-4 lg:p-6"><Outlet /></main>
+        <main className="flex-1 overflow-y-auto overflow-x-hidden p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:p-4 lg:p-6"><Suspense fallback={<div className="grid place-items-center py-20 text-slate-400">جارٍ التحميل…</div>}><Outlet /></Suspense></main>
       </div>
     </div>
   );

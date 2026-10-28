@@ -81,7 +81,7 @@ export default function Dashboard() {
     const byCur = {}; Object.entries(bal).forEach(([k, v]) => { const c = k.split('|')[1]; byCur[c] = round2((byCur[c] || 0) + v); });
     const sh = (n) => prod.filter((p) => p.shift === n).reduce((a, p) => a + Number(p.liters || 0), 0);
     return { trend, monthly, sales, salesTotal, expCat, bal: byCur, morning: sh('morning'), evening: sh('evening'),
-      expPeriod: sumByCurrency(exps.filter((e) => !e.voided && inR(e.date)), (e) => e.amount),
+      expPeriod: sumByCurrency(operatingExpenses(exps, { from: from || undefined, to: to || undefined }), (e) => e.amount),
       herd: Object.values(herdState(events)).filter((x) => x.active).length,
       pBal: partners.map((p) => ({ ...p, bal: partnerLedger(p.id, ledger, { currency: 'SYP' }).closing })),
       capital: partners.reduce((a, p) => a + Number(p.initialCapital || 0), 0),
@@ -105,7 +105,7 @@ export default function Dashboard() {
 
       <div className="grid grid-cols-2 gap-2.5 sm:gap-3 md:grid-cols-3 xl:grid-cols-6">
         <Stat label="شركاء المزرعة" value={partners.length} sub={`رأس المال: ${money(d.capital)}`} icon={Users} />
-        <Stat label={`المصروفات${sfx}`} value={<span className="text-base sm:text-xl">{Object.keys(d.expPeriod).length ? Object.entries(d.expPeriod).map(([c, v]) => money(v, c)).join(' | ') : money(0)}</span>} icon={Receipt} tone="red" />
+        <Stat label={`المصروفات${sfx}`} value={<span className="text-base sm:text-xl">{Object.keys(d.expPeriod).length ? Object.entries(d.expPeriod).map(([c, v]) => money(v, c)).join(' | ') : money(0)}</span>} sub="تشغيلية — بدون سلف الشركاء وسداد القروض" icon={Receipt} tone="red" />
         <Stat className="col-span-2 md:col-span-1" label="الرصيد النقدي (الحالي)" value={<span className="text-base sm:text-lg">{cashLine}</span>} sub="لكل عملة على حدة" icon={Wallet} tone="amber" />
         <Stat className="col-span-2 md:col-span-1" label={`إجمالي المبيعات${sfx}`} value={money(d.salesTotal)} sub="الحليب عند التسليم + بيع الحيوانات" icon={ShoppingCart} tone="purple" />
         <Stat label={isAll ? 'إجمالي إنتاج الحليب' : `إنتاج الحليب${sfx}`} value={`${fmt(d.morning + d.evening)} لتر`} sub={`الصباح ${fmt(d.morning)} · المساء ${fmt(d.evening)}`} icon={Droplets} tone="green" />

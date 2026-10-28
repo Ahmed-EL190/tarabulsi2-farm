@@ -1,14 +1,29 @@
+import { lazy } from 'react';
 import { Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider, useAuth } from './data/auth';
 import { firebaseConfigured } from './lib/firebase';
 import Layout from './components/Layout';
 import Login from './pages/Login';
-import Dashboard from './pages/Dashboard';
-import MilkSales from './pages/MilkSales';
-import Reports from './pages/Reports';
-import { Cash, Expenses, Loans, Settlements } from './pages/Finance';
-import { Production, Customers, Partners, Animals, AnimalEvents, Exchange, Inventory } from './pages/modules';
-import { Users, Settings, Audit } from './pages/Admin';
+
+// كل صفحة تُحمَّل عند فتحها فقط (التحميل الأول أخف بكثير على الموبايل)
+const page = (loader, name) => lazy(() => loader().then((m) => ({ default: name ? m[name] : m.default })));
+const Dashboard = page(() => import('./pages/Dashboard'));
+const MilkSales = page(() => import('./pages/MilkSales'));
+const Reports = page(() => import('./pages/Reports'));
+const Cash = page(() => import('./pages/Finance'), 'Cash');
+const Expenses = page(() => import('./pages/Finance'), 'Expenses');
+const Loans = page(() => import('./pages/Finance'), 'Loans');
+const Settlements = page(() => import('./pages/Finance'), 'Settlements');
+const Production = page(() => import('./pages/modules'), 'Production');
+const Customers = page(() => import('./pages/modules'), 'Customers');
+const Partners = page(() => import('./pages/modules'), 'Partners');
+const Animals = page(() => import('./pages/modules'), 'Animals');
+const AnimalEvents = page(() => import('./pages/modules'), 'AnimalEvents');
+const Exchange = page(() => import('./pages/modules'), 'Exchange');
+const Inventory = page(() => import('./pages/modules'), 'Inventory');
+const Users = page(() => import('./pages/Admin'), 'Users');
+const Settings = page(() => import('./pages/Admin'), 'Settings');
+const Audit = page(() => import('./pages/Admin'), 'Audit');
 
 function Gate() {
   const { user, loading } = useAuth();

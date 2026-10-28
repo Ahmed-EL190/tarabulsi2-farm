@@ -3,8 +3,8 @@ import { ArrowLeftRight, Wallet, HandCoins, ListChecks, Pencil, Ban } from 'luci
 import CrudPage, { FormModal } from '../components/CrudPage';
 import ExportButtons from '../components/ExportButtons';
 import { Card, Table, Badge, Empty, PageHeader, Stat, Modal, money, fmt, today } from '../components/ui';
-import { useCol, useSettings, saveRecord, commit } from '../data/db';
-import { payExpense, addExpenseWithPayment, updateExpenseSynced, updateExpensePayment, voidExpensePayment, transferCash, addOtherIncome, createLoan, repayLoan, finalizeSettlement, partnerMovement } from '../data/ops';
+import { useCol, useSettings, saveRecord, commit, voidRecord } from '../data/db';
+import { payExpense, addExpenseWithPayment, updateExpenseSynced, updateExpensePayment, voidExpensePayment, updateCustomerPayment, voidCustomerPayment, transferCash, addOtherIncome, createLoan, repayLoan, finalizeSettlement, partnerMovement } from '../data/ops';
 import { useAuth } from '../data/auth';
 import { cashBalances, cashFlowSummary, expensePosition, loanPosition, partnerLedger, profitAndLoss, allocateProfit, validateShares, customerPosition, round2, sumByCurrency } from '../lib/finance';
 import { CURRENCIES, METHODS, EXPENSE_CATEGORIES, catLabel, CASH_AR } from '../lib/constants';
@@ -15,12 +15,28 @@ const acct = { name: 'accountId', label: 'الصندوق / الحساب', type: 
 // ───────── الصندوق والحسابات
 export function Cash() {
   const { user, can } = useAuth();
-  const [tab, setTab] = useState('bal'); const [m, setM] = useState(null);
+  const [tab, setTab] = useState('bal'); const [m, setM] = useState(null); const [ed, setEd] = useState(null);
+  const allTx = useCol('cashTransactions').rows; const custPays = useCol('customerPayments').rows; const expPays = useCol('expensePayments').rows; const expenses = useCol('expenses').rows; const ledgerRows = useCol('partnerCapitalTransactions').rows;
   const accounts = useCol('cashAccounts').rows.filter((a) => !a.voided); const txs = useCol('cashTransactions').rows.filter((t) => !t.voided);
   const bal = cashBalances(txs); const [from, setFrom] = useState(''); const [to, setTo] = useState(''); const [c, setC] = useState('SYP'); const s = useSettings();
   const flow = cashFlowSummary(txs, { from, to, currency: c });
   const shown = txs.filter((t) => (!from || t.date >= from) && (!to || t.date <= to)).sort((a, b) => b.date.localeCompare(a.date));
   const acctName = (id) => accounts.find((a) => a.id === id)?.name || '—';
+  // أي حركات يمكن تعديلها هنا؟ دفعات العملاء ودفعات المصروفات (تتحدّث مع أصلها)، والإيراد الآخر والرصيد الافتتاحي. الباقي يُعدَّل من صفحته.
+  const kindOf = (t) => (t.customerPaymentId ? 'cust' : t.expensePaymentId ? 'exp' : ['other_income', 'opening_balance'].includes(t.type) ? 'direct' : null);
+  const links = { cash: allTx, ledger: ledgerRows };
+  const edFields = { cust: [{ name: 'date', label: 'التاريخ', type: 'date', required: true }, { name: 'amount', label: 'المبلغ', type: 'number', required: true, positive: true }, { name: 'method', label: 'طريقة الدفع', type: 'select', options: METHODS, default: 'cash' }, { name: 'note', label: 'ملاحظة', type: 'text' }],
+    exp: [{ name: 'date', label: 'تاريخ الدفع', type: 'date', required: true }, { name: 'amount', label: 'المبلغ', type: 'number', required: true, positive: true }],
+    direct: [{ name: 'date', label: 'التاريخ', type: 'date', required: true }, { name: 'amount', label: 'المبلغ', type: 'number', required: true, positive: true }, { name: 'description', label: 'البيان', type: 'text' }] };
+  const edDefaults = (t) => { const k = kindOf(t); if (k === 'cust') { const p = custPays.find((x) => x.id === t.customerPaymentId); return { date: t.date, amount: t.amount, method: p?.method || t.method || 'cash', note: p?.note || t.description || '' }; } return { date: t.date, amount: t.amount, description: t.description || '' }; };
+  const saveEd = async (d) => { const t = ed; const k = kindOf(t);
+    if (k === 'cust') { const p = custPays.find((x) => x.id === t.customerPaymentId); if (!p) throw new Error('الدفعة الأصلية غير موجودة'); return updateCustomerPayment(user, p, allTx, { ...d, accountId: p.accountId || t.accountId }); }
+    if (k === 'exp') { const p = expPays.find((x) => x.id === t.expensePaymentId); const e = expenses.find((x) => x.id === (p?.expenseId || t.expenseId)); if (!p || !e) throw new Error('الدفعة الأصلية غير موجودة'); return updateExpensePayment(user, e, expPays, p, links, d); }
+    return saveRecord(user, 'cashTransactions', { date: d.date, amount: Number(d.amount), description: d.description || '' }, t.id); };
+  const voidEd = async (t) => { const why = prompt('سبب الإلغاء؟ (تبقى الحركة في سجل التدقيق)'); if (!why) return; const k = kindOf(t);
+    if (k === 'cust') { const p = custPays.find((x) => x.id === t.customerPaymentId); return p ? voidCustomerPayment(user, p, allTx, why) : voidRecord(user, 'cashTransactions', t.id, why); }
+    if (k === 'exp') { const p = expPays.find((x) => x.id === t.expensePaymentId); return p ? voidExpensePayment(user, p, links, why) : voidRecord(user, 'cashTransactions', t.id, why); }
+    return voidRecord(user, 'cashTransactions', t.id, why); };
   const report = { farm: s.farmName, title: 'دفتر الصندوق', from, to, currency: c, columns: [{ key: 'date', label: 'التاريخ', type: 'date' }, { key: 'typeAr', label: 'النوع' }, { key: 'acct', label: 'الحساب' }, { key: 'description', label: 'البيان' }, { key: 'cur', label: 'العملة' }, { key: 'inAmt', label: 'وارد', type: 'money' }, { key: 'outAmt', label: 'صادر', type: 'money' }],
     rows: shown.filter((t) => t.currency === c).map((t) => ({ ...t, typeAr: CASH_AR[t.type] || t.type, acct: acctName(t.accountId), cur: t.currency, inAmt: t.direction === 'in' ? Number(t.amount) : 0, outAmt: t.direction === 'out' ? Number(t.amount) : 0 })) };
   report.totals = { inAmt: round2(report.rows.reduce((a, r) => a + r.inAmt, 0)), outAmt: round2(report.rows.reduce((a, r) => a + r.outAmt, 0)) };
@@ -35,7 +51,9 @@ export function Cash() {
       {tab === 'tx' && <Card>
         <div className="mb-3 flex flex-wrap items-end gap-2"><select className="input w-full sm:w-24" value={c} onChange={(e) => setC(e.target.value)}>{CURRENCIES.map(([v]) => <option key={v}>{v}</option>)}</select><input type="date" className="input w-full sm:w-40" value={from} onChange={(e) => setFrom(e.target.value)} /><input type="date" className="input w-full sm:w-40" value={to} onChange={(e) => setTo(e.target.value)} /><ExportButtons report={report} /></div>
         <div className="mb-3 grid gap-2 sm:grid-cols-3"><Stat label={`إجمالي الوارد ${c}`} value={fmt(flow.totalIn)} tone="green" /><Stat label={`إجمالي الصادر ${c}`} value={fmt(flow.totalOut)} tone="red" /><Stat label="الصافي" value={fmt(flow.net)} /></div>
-        <Table rows={report.rows} empty={<Empty title="لا توجد حركات" />} columns={report.columns.map((x) => ({ ...x, render: x.type === 'money' ? (r) => <span className="num">{r[x.key] ? fmt(r[x.key]) : '—'}</span> : undefined }))} /></Card>}
+        <Table rows={report.rows} empty={<Empty title="لا توجد حركات" />} columns={[...report.columns.map((x) => ({ ...x, render: x.type === 'money' ? (r) => <span className="num">{r[x.key] ? fmt(r[x.key]) : '—'}</span> : undefined })),
+          { key: '_a', label: '', render: (r) => { const k = kindOf(r); if (!k) return <span className="text-xs text-slate-400" title="عدّلها من صفحتها الأصلية">من صفحتها</span>; return <div className="flex gap-1">{can('update') && <button className="rounded p-1.5 hover:bg-slate-100" title="تعديل" onClick={() => setEd(r)}><Pencil size={15} /></button>}{can('voidFinancial') && <button className="rounded p-1.5 text-rose-600 hover:bg-rose-50" title="إلغاء الحركة" onClick={() => voidEd(r)}><Ban size={15} /></button>}</div>; } }]} />
+        {ed && <FormModal open onClose={() => setEd(null)} title={`تعديل حركة: ${CASH_AR[ed.type] || ed.type}`} fields={edFields[kindOf(ed)]} defaults={edDefaults(ed)} onSubmit={saveEd} />}</Card>}
       {tab === 'acc' && <CrudPage title="الحسابات" col="cashAccounts" searchKeys={['name']} fields={[{ name: 'name', label: 'اسم الصندوق / الحساب', type: 'text', required: true }, { name: 'kind', label: 'النوع', type: 'select', required: true, options: [['cash', 'صندوق نقدي'], ['bank', 'حساب بنكي']], default: 'cash' }, { name: 'openingBalance', label: 'رصيد افتتاحي (اختياري)', type: 'number', min: 0 }, { name: 'openingCurrency', label: 'عملة الرصيد الافتتاحي', type: 'select', options: CURRENCIES, default: 'SYP' }, { name: 'openingDate', label: 'تاريخ الرصيد الافتتاحي', type: 'date' }]}
         create={async (u, d) => { const { openingBalance, openingCurrency, openingDate, ...rest } = d; const [id] = await commit(u, [{ col: 'cashAccounts', data: rest }]);
           if (Number(openingBalance) > 0) await commit(u, [{ col: 'cashTransactions', data: { date: openingDate || today(), type: 'opening_balance', direction: 'in', amount: Number(openingBalance), currency: openingCurrency || 'SYP', accountId: id, description: 'رصيد افتتاحي' } }]); }}
@@ -132,7 +150,7 @@ export function Settlements() {
   const calc = useMemo(() => {
     const otherIncome = cash.filter((t) => t.type === 'other_income' && !t.voided), animalSales = events.filter((e) => e.type === 'sale' && !e.voided), animalPurchases = events.filter((e) => e.type === 'purchase' && !e.voided && Number(e.value) > 0);
     const pl = profitAndLoss({ agreements: ags, deliveries: dls, expenses: exps, otherIncome: otherIncome.map((t) => ({ ...t })), animalSales: animalSales.map((e) => ({ date: e.date, amount: e.value, currency: e.currency })), animalPurchases: animalPurchases.map((e) => ({ date: e.date, amount: e.value, currency: e.currency })), from, to, currency: c, animalPurchaseAsExpense: s.animalPurchaseAsExpense });
-    const recv = round2(custs.reduce((a, cu) => a + customerPosition(cu.id, { agreements: ags.filter((x) => x.currency === c), deliveries: dls, payments: pays }).receivable, 0));
+    const recv = round2(custs.reduce((a, cu) => a + customerPosition(cu.id, { agreements: ags.filter((x) => (x.currency || 'SYP') === c), deliveries: dls, payments: pays.filter((x) => (x.currency || 'SYP') === c) }).receivable, 0));
     const payable = round2(exps.filter((e) => !e.voided && e.currency === c && e.date <= to).reduce((a, e) => a + expensePosition(e, epays).outstanding, 0));
     const loanBal = round2(loans.filter((l) => !l.voided && l.currency === c).reduce((a, l) => a + loanPosition(l, reps, to).outstandingPrincipal, 0));
     const shares = validateShares(partners); const prevDist = round2(led.filter((e) => e.type === 'profit_distribution' && e.currency === c && !e.voided && e.date <= to).reduce((a, e) => a + Number(e.amount), 0));

@@ -3,7 +3,7 @@ import { Plus, Truck, Banknote, Undo2, Zap, Pencil, Ban } from 'lucide-react';
 import { Card, Table, Badge, Modal, Empty, PageHeader, Stat, SearchBox, fmt, money, today } from '../components/ui';
 import { FormModal } from '../components/CrudPage';
 import { useCol, commit, nextNumber, newId } from '../data/db';
-import { createAgreement, addDelivery, addCustomerPayment, updateCustomerPayment, voidCustomerPayment } from '../data/ops';
+import { createAgreement, addDelivery, addCustomerPayment, updateCustomerPayment, voidCustomerPayment, updateDelivery, voidDelivery } from '../data/ops';
 import { useAuth } from '../data/auth';
 import { agreementPosition, sumByCurrency, round2, salesLedger, salesTotals } from '../lib/finance';
 import { CURRENCIES, METHODS, PAY_STATUS_AR, AG_STATUS_AR, SALE_KIND_AR } from '../lib/constants';
@@ -26,7 +26,7 @@ const agFields = [
 function Detail({ ag, pos, deliveries, payments, onClose }) {
   const { user, can } = useAuth();
   const [form, setForm] = useState(null); const [err, setErr] = useState('');
-  const cashTxs = useCol('cashTransactions').rows; const [editP, setEditP] = useState(null);
+  const cashTxs = useCol('cashTransactions').rows; const [editP, setEditP] = useState(null); const [editD, setEditD] = useState(null);
   const myD = deliveries.filter((d) => d.agreementId === ag.id && !d.voided).sort((a, b) => a.date.localeCompare(b.date));
   const myP = payments.filter((p) => p.agreementId === ag.id && !p.voided).sort((a, b) => a.date.localeCompare(b.date));
   const alloc = Object.fromEntries(pos.allocations.map((a) => [a.deliveryId, a]));
@@ -53,7 +53,12 @@ function Detail({ ag, pos, deliveries, payments, onClose }) {
       </div>
       {ag.schedule && <div className="mb-3 whitespace-pre-line rounded-lg bg-slate-50 p-3 text-sm"><b>الجدول المخطط:</b>{'\n'}{ag.schedule}</div>}
       <h4 className="mb-1 font-bold">التسليمات (الدفعات تُوزَّع الأقدم أولاً)</h4>
-      <Table rows={myD} empty={<Empty title="لا توجد تسليمات" />} columns={[{ key: 'date', label: 'التاريخ' }, { key: 'qty', label: 'الكمية', render: (d) => <span className="num">{fmt(d.qty)}</span> }, { key: 'pr', label: 'سعر اللتر', render: (d) => <span className="num">{fmt(d.pricePerLiter ?? ag.pricePerLiter)}</span> }, { key: 'v', label: 'القيمة', render: (d) => <span className="num">{fmt(alloc[d.id]?.value)}</span> }, { key: 'p', label: 'المسدّد', render: (d) => <span className="num">{fmt(alloc[d.id]?.paid)}</span> }, { key: 'due', label: 'المتبقي', render: (d) => <b className="num">{fmt(alloc[d.id]?.due)}</b> }]} />
+      <Table rows={myD} empty={<Empty title="لا توجد تسليمات" />} columns={[{ key: 'date', label: 'التاريخ' }, { key: 'qty', label: 'الكمية', render: (d) => <span className="num">{fmt(d.qty)}</span> }, { key: 'pr', label: 'سعر اللتر', render: (d) => <span className="num">{fmt(d.pricePerLiter ?? ag.pricePerLiter)}</span> }, { key: 'v', label: 'القيمة', render: (d) => <span className="num">{fmt(alloc[d.id]?.value)}</span> }, { key: 'p', label: 'المسدّد', render: (d) => <span className="num">{fmt(alloc[d.id]?.paid)}</span> }, { key: 'due', label: 'المتبقي', render: (d) => <b className="num">{fmt(alloc[d.id]?.due)}</b> },
+        { key: '_a', label: '', render: (d) => <div className="flex gap-1">
+          {can('update') && <button className="rounded p-1.5 hover:bg-slate-100" title="تعديل التسليم" onClick={() => setEditD(d)}><Pencil size={15} /></button>}
+          {can('voidFinancial') && <button className="rounded p-1.5 text-rose-600 hover:bg-rose-50" title="حذف (إلغاء) التسليم" onClick={async () => { const why = prompt('سبب حذف التسليم؟'); if (why) await voidDelivery(user, d, why); }}><Ban size={15} /></button>}</div> }]} />
+      {editD && <FormModal open onClose={() => setEditD(null)} title="تعديل تسليم" fields={[{ name: 'date', label: 'تاريخ التسليم', type: 'date', required: true }, { name: 'qty', label: `الكمية (الحد الأقصى ${fmt(pos.remainingQty + Number(editD.qty))} لتر)`, type: 'number', required: true, positive: true }, { name: 'pricePerLiter', label: 'سعر اللتر (فارغ = سعر الاتفاق)', type: 'number', min: 0 }, { name: 'notes', label: 'ملاحظات', type: 'text' }]}
+        defaults={{ date: editD.date, qty: editD.qty, pricePerLiter: editD.pricePerLiter ?? '', notes: editD.notes || '' }} onSubmit={(d) => updateDelivery(user, ag, deliveries, editD, d)} />}
       <h4 className="mb-1 mt-4 font-bold">الدفعات والاستردادات</h4>
       <Table rows={myP} empty={<Empty title="لا توجد دفعات" />} columns={[{ key: 'date', label: 'التاريخ' }, { key: 'type', label: 'النوع', render: (p) => (p.type === 'refund' ? <Badge tone="amber">استرداد</Badge> : p.kind === 'advance' ? <Badge tone="blue">دفعة مقدمة</Badge> : <Badge tone="green">دفعة</Badge>) }, { key: 'amount', label: 'المبلغ', render: (p) => <span className="num">{fmt(p.amount)}</span> }, { key: 'method', label: 'الطريقة' }, { key: 'note', label: 'ملاحظة' },
         { key: '_a', label: '', render: (p) => <div className="flex gap-1">
