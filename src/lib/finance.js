@@ -3,6 +3,8 @@
 
 const n = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
 export const round2 = (v) => Math.round((n(v) + Number.EPSILON) * 100) / 100;
+/** تاريخ اليوم بالتوقيت المحلي (وليس UTC) كي لا يتأخر/يتقدّم يوم قرب منتصف الليل. */
+export const todayISO = () => new Date().toLocaleDateString('en-CA');
 const inRange = (d, from, to) => (!from || d >= from) && (!to || d <= to); // ISO yyyy-mm-dd strings compare lexically
 
 /** Sum {amount,currency} rows -> { SYP: x, USD: y } — never mixes currencies. */
@@ -108,7 +110,7 @@ const daysBetween = (a, b) => Math.max(0, Math.round((new Date(b) - new Date(a))
 
 /** loan: {principal, disbursementDate, interestRate (annual %), adjustments:[{amount,date}]}
  *  repayments: [{loanId,date,principalAmount,interestAmount}] — interest and principal are tracked separately. */
-export function loanPosition(loan, repayments = [], asOf = new Date().toISOString().slice(0, 10)) {
+export function loanPosition(loan, repayments = [], asOf = todayISO()) {
   const reps = repayments.filter((r) => r.loanId === loan.id && !r.voided && r.date <= asOf);
   const adj = (loan.adjustments || []).filter((a) => a.date <= asOf);
   const principalRepaid = round2(reps.reduce((s, r) => s + n(r.principalAmount), 0));
@@ -226,12 +228,32 @@ export function allocateProfit(netProfit, partners) {
   return raw.map((r) => ({ ...r, amount: round2(r.amount) }));
 }
 
+/** مدخلات الأرباح الخاصة بالمواشي — مصدر واحد للتسويات والتقارير.
+ *  asExpense=true : الشراء مصروف، والبيع إيراد كامل (كما في ملف Excel الأصلي).
+ *  asExpense=false: لا يُحتسب الشراء، ويُحتسب في البيع الربح/الخسارة فقط (سعر البيع − تكلفة الحيوان).
+ *  التبادل = بيع للحيوان الخارج بقيمته المتفق عليها + شراء للحيوان الوارد (فقط لو سُجّل جديداً عبر التبادل، لتفادي تكرار شراء سُجّل سابقاً). */
+export function animalPLInputs(events = [], animals = [], asExpense = true) {
+  const byId = Object.fromEntries(animals.map((a) => [a.id, a]));
+  const cost = (id) => n(byId[id]?.acquisitionCost);
+  const animalSales = [], animalPurchases = [];
+  for (const e of events) {
+    if (e.voided || byId[e.animalId]?.voided) continue;
+    const row = (amount) => ({ date: e.date, currency: e.currency || 'SYP', amount });
+    if (e.type === 'sale') animalSales.push(row(asExpense ? n(e.value) : round2(n(e.value) - n(e.costBasis ?? cost(e.animalId)))));
+    else if (e.type === 'exchange_out') animalSales.push(row(asExpense ? n(e.value) : round2(n(e.value) - cost(e.animalId))));
+    else if (asExpense && n(e.value) > 0 && (e.type === 'purchase' || (e.type === 'exchange_in' && byId[e.animalId]?.viaExchange))) animalPurchases.push(row(n(e.value)));
+  }
+  return { animalSales, animalPurchases };
+}
+
 // ───────────── Animals ─────────────
 const ACTIVE_ADD = new Set(['purchase', 'birth', 'exchange_in', 'transfer_in', 'opening']);
 const ACTIVE_REMOVE = new Set(['sale', 'death', 'transfer_out', 'exchange_out']);
-export function herdState(events) {
+export function herdState(events, animals = null) {
   const state = {};
-  for (const e of [...events].filter((x) => !x.voided).sort((a, b) => a.date.localeCompare(b.date))) {
+  const gone = animals ? new Set(animals.filter((a) => a.voided).map((a) => a.id)) : null; // حيوانات ملغاة لا تُحسب في القطيع
+  // نفس اليوم: الدخول قبل الخروج (شراء ثم بيع في نفس اليوم لا يُبقي الحيوان "نشطاً" بالغلط)
+  for (const e of [...events].filter((x) => !x.voided && !(gone && gone.has(x.animalId))).sort((a, b) => a.date.localeCompare(b.date) || (ACTIVE_ADD.has(b.type) ? 1 : 0) - (ACTIVE_ADD.has(a.type) ? 1 : 0))) {
     if (ACTIVE_ADD.has(e.type)) state[e.animalId] = { active: true, since: e.date, last: e.type };
     else if (ACTIVE_REMOVE.has(e.type)) state[e.animalId] = { ...(state[e.animalId] || {}), active: false, last: e.type, endDate: e.date };
   }
@@ -274,7 +296,7 @@ export function salesTotals(rows) {
 
 // ───────────── Animal profile (age, milk, treatment, sale result — as in the Excel animals sheet) ─────────────
 export const monthsBetween = (a, b) => Math.max(0, Math.floor(daysBetween(a, b) / 30.4375));
-export function animalProfile(animal, { events = [], production = [], expenses = [] } = {}, asOf = new Date().toISOString().slice(0, 10)) {
+export function animalProfile(animal, { events = [], production = [], expenses = [] } = {}, asOf = todayISO()) {
   const sale = events.find((e) => e.animalId === animal.id && e.type === 'sale' && !e.voided);
   const end = sale?.date || asOf;
   const hasAge = animal.ageAtPurchaseMonths !== undefined && animal.ageAtPurchaseMonths !== '' && animal.ageAtPurchaseMonths !== null;

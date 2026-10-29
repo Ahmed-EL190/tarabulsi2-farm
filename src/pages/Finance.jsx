@@ -4,9 +4,9 @@ import CrudPage, { FormModal } from '../components/CrudPage';
 import ExportButtons from '../components/ExportButtons';
 import { Card, Table, Badge, Empty, PageHeader, Stat, Modal, money, fmt, today } from '../components/ui';
 import { useCol, useSettings, saveRecord, commit, voidRecord } from '../data/db';
-import { payExpense, addExpenseWithPayment, updateExpenseSynced, updateExpensePayment, voidExpensePayment, updateCustomerPayment, voidCustomerPayment, transferCash, addOtherIncome, createLoan, repayLoan, finalizeSettlement, partnerMovement } from '../data/ops';
+import { payExpense, addExpenseWithPayment, updateExpenseSynced, updateExpensePayment, voidExpensePayment, updateCustomerPayment, voidCustomerPayment, transferCash, addOtherIncome, createLoan, repayLoan, finalizeSettlement, partnerMovement, voidExpenseCascade, voidSettlement, voidDistribution } from '../data/ops';
 import { useAuth } from '../data/auth';
-import { cashBalances, cashFlowSummary, expensePosition, loanPosition, partnerLedger, profitAndLoss, allocateProfit, validateShares, customerPosition, round2, sumByCurrency } from '../lib/finance';
+import { cashBalances, cashFlowSummary, expensePosition, loanPosition, partnerLedger, profitAndLoss, allocateProfit, validateShares, customerPosition, animalPLInputs, round2, sumByCurrency } from '../lib/finance';
 import { CURRENCIES, METHODS, EXPENSE_CATEGORIES, catLabel, CASH_AR } from '../lib/constants';
 
 const cur = { name: 'currency', label: 'العملة', type: 'select', options: CURRENCIES, required: true, default: 'SYP' };
@@ -95,7 +95,10 @@ export function Expenses() {
   const { user } = useAuth(); const [pay, setPay] = useState(null); const [pm, setPm] = useState(null);
   const ctx = () => ({ pays: useCol('expensePayments').rows, cash: useCol('cashTransactions').rows, ledger: useCol('partnerCapitalTransactions').rows });
   return (<>
-    <CrudPage title="المصروفات" subtitle="المصروف المستحق ≠ المدفوع. الدفع من حساب أو من شريك (دون تكرار المصروف)" col="expenses" searchKeys={['description', 'supplierName', 'category']} useCtx={ctx} defaults={{ payDate: '' }}
+    <CrudPage title="المصروفات" subtitle="فلتر بالفئة وحالة الدفع. المصروف المستحق ≠ المدفوع. الدفع من حساب أو من شريك (دون تكرار المصروف)" col="expenses" searchKeys={['description', 'supplierName']} useCtx={ctx} defaults={{ payDate: '' }}
+      onVoid={(u, r, c, why) => voidExpenseCascade(u, r, c, why)}
+      filters={[{ key: 'category', label: 'الفئة', options: EXPENSE_CATEGORIES, allLabel: 'كل الفئات' }, { key: '_st', label: 'حالة الدفع', allLabel: 'الكل', options: [['paid', 'مدفوع'], ['partial', 'مدفوع جزئياً'], ['unpaid', 'غير مدفوع']], test: (r, v, c) => expensePosition(r, c.pays || []).status === v }]}
+      summary={(rows, { pays = [] }) => { const lst = (o) => (Object.keys(o).length ? Object.entries(o).map(([c, v]) => money(v, c)).join(' | ') : money(0)); return rows.length ? <div className="mb-1 grid grid-cols-2 gap-3 sm:grid-cols-3"><Stat label="عدد المصروفات المعروضة" value={rows.length} /><Stat label="إجمالي المستحق" value={<span className="text-base sm:text-xl">{lst(sumByCurrency(rows, (r) => r.amount))}</span>} tone="red" /><Stat className="col-span-2 sm:col-span-1" label="غير المدفوع منها" value={<span className="text-base sm:text-xl">{lst(sumByCurrency(rows, (r) => expensePosition(r, pays).outstanding))}</span>} tone="amber" /></div> : null; }}
       fields={[{ name: 'date', label: 'تاريخ المصروف / الفاتورة', type: 'date', required: true }, { name: 'category', label: 'الفئة', type: 'select', required: true, options: EXPENSE_CATEGORIES, default: 'feed' }, { name: 'description', label: 'الوصف', type: 'text', required: true }, { name: 'amount', label: 'المبلغ', type: 'number', required: true, positive: true }, cur, { name: 'supplierName', label: 'المورّد / المستلم', type: 'text' }, { name: 'animalId', label: 'رقم الحيوان (للعلاج، اختياري)', type: 'rel', col: 'animals', optLabel: (r) => r.tag + (r.name ? ' - ' + r.name : '') }, { name: 'workerName', label: 'اسم العامل / الشريك (للسلف)', type: 'text' }, { name: 'activity', label: 'النشاط المرتبط', type: 'text' }, { name: 'notes', label: 'ملاحظات', type: 'textarea' },
         { name: 'payNow', label: 'الدفع', type: 'select', required: true, default: 'no', options: [['no', 'غير مدفوع (آجل) — يُدفع لاحقاً'], ['full', 'مدفوع بالكامل الآن'], ['partial', 'مدفوع جزئياً الآن']] },
         { name: 'paidAmount', label: 'المبلغ المدفوع (للدفع الجزئي فقط)', type: 'number', min: 0 },
@@ -143,39 +146,66 @@ export function Loans() {
 // ───────── التسويات
 export function Settlements() {
   const { user, can } = useAuth(); const s = useSettings();
-  const [from, setFrom] = useState(`${new Date().getFullYear()}-01-01`); const [to, setTo] = useState(today()); const [c, setC] = useState('SYP'); const [err, setErr] = useState(''); const [dist, setDist] = useState(null);
-  const partners = useCol('partners').rows.filter((p) => !p.voided && p.status !== 'inactive'); const led = useCol('partnerCapitalTransactions').rows; const hist = useCol('settlements').rows;
+  const [from, setFrom] = useState(`${new Date().getFullYear()}-01-01`); const [to, setTo] = useState(today()); const [c, setC] = useState('SYP'); const [err, setErr] = useState(''); const [dist, setDist] = useState(null); const [see, setSee] = useState(null);
+  const partners = useCol('partners').rows.filter((p) => !p.voided && p.status !== 'inactive'); const led = useCol('partnerCapitalTransactions').rows; const hist = useCol('settlements').rows.filter((h) => !h.voided);
   const ags = useCol('milkSales').rows, dls = useCol('milkDeliveries').rows, exps = useCol('expenses').rows, epays = useCol('expensePayments').rows, pays = useCol('customerPayments').rows, custs = useCol('customers').rows;
-  const cash = useCol('cashTransactions').rows, events = useCol('animalEvents').rows, loans = useCol('partnerLoans').rows, reps = useCol('partnerLoanRepayments').rows;
+  const cash = useCol('cashTransactions').rows, events = useCol('animalEvents').rows, animals = useCol('animals').rows, loans = useCol('partnerLoans').rows, reps = useCol('partnerLoanRepayments').rows;
+  const asExpense = s.animalPurchaseAsExpense !== false;
+  const lastTo = hist.filter((h) => (h.currency || 'SYP') === c).map((h) => h.to).sort().pop() || '';
+  const clash = hist.find((h) => (h.currency || 'SYP') === c && !(to < h.from || from > h.to));
   const calc = useMemo(() => {
-    const otherIncome = cash.filter((t) => t.type === 'other_income' && !t.voided), animalSales = events.filter((e) => e.type === 'sale' && !e.voided), animalPurchases = events.filter((e) => e.type === 'purchase' && !e.voided && Number(e.value) > 0);
-    const pl = profitAndLoss({ agreements: ags, deliveries: dls, expenses: exps, otherIncome: otherIncome.map((t) => ({ ...t })), animalSales: animalSales.map((e) => ({ date: e.date, amount: e.value, currency: e.currency })), animalPurchases: animalPurchases.map((e) => ({ date: e.date, amount: e.value, currency: e.currency })), from, to, currency: c, animalPurchaseAsExpense: s.animalPurchaseAsExpense });
-    const recv = round2(custs.reduce((a, cu) => a + customerPosition(cu.id, { agreements: ags.filter((x) => (x.currency || 'SYP') === c), deliveries: dls, payments: pays.filter((x) => (x.currency || 'SYP') === c) }).receivable, 0));
-    const payable = round2(exps.filter((e) => !e.voided && e.currency === c && e.date <= to).reduce((a, e) => a + expensePosition(e, epays).outstanding, 0));
+    const ap = animalPLInputs(events, animals, asExpense);
+    const pl = profitAndLoss({ agreements: ags, deliveries: dls, expenses: exps, otherIncome: cash.filter((t) => t.type === 'other_income' && !t.voided), animalSales: ap.animalSales, animalPurchases: ap.animalPurchases, from, to, currency: c, animalPurchaseAsExpense: asExpense });
+    // الذمم حتى تاريخ نهاية الفترة (وليس حتى اليوم)
+    const cc = (x) => (x.currency || 'SYP') === c; const upTo = (x) => !x.date || x.date <= to;
+    const recv = round2(custs.filter((cu) => cu.status !== 'inactive' || true).reduce((a, cu) => a + customerPosition(cu.id, { agreements: ags.filter((x) => cc(x) && upTo(x)), deliveries: dls.filter(upTo), payments: pays.filter((x) => cc(x) && upTo(x)) }).receivable + (c === 'SYP' ? Number(cu.openingBalance || 0) : 0), 0));
+    const payable = round2(exps.filter((e) => !e.voided && (e.currency || 'SYP') === c && e.date <= to).reduce((a, e) => a + expensePosition(e, epays.filter(upTo)).outstanding, 0));
     const loanBal = round2(loans.filter((l) => !l.voided && l.currency === c).reduce((a, l) => a + loanPosition(l, reps, to).outstandingPrincipal, 0));
     const shares = validateShares(partners); const prevDist = round2(led.filter((e) => e.type === 'profit_distribution' && e.currency === c && !e.voided && e.date <= to).reduce((a, e) => a + Number(e.amount), 0));
     const capital = round2(led.filter((e) => ['capital_contribution', 'additional_capital'].includes(e.type) && e.currency === c && !e.voided && e.date <= to).reduce((a, e) => a + Number(e.amount), 0));
     let alloc = null; try { if (shares.ok && partners.length) alloc = allocateProfit(pl.netProfit, partners); } catch { alloc = null; }
     return { pl, recv, payable, loanBal, shares, prevDist, capital, alloc };
-  }, [ags, dls, exps, epays, pays, custs, cash, events, loans, reps, led, partners, from, to, c, s.animalPurchaseAsExpense]);
-  const name = (id) => partners.find((p) => p.id === id)?.name || '—';
-  const finalize = async () => { setErr(''); try { if (!confirm('تأكيد اعتماد التسوية؟ سيتم قيد تخصيص الأرباح في دفاتر الشركاء (بدون أي حركة نقدية).')) return; await finalizeSettlement(user, { from, to, currency: c, ...calc.pl, receivables: calc.recv, payables: calc.payable, loanBalances: calc.loanBal, capital: calc.capital, previousDistributions: calc.prevDist }, partners); } catch (e) { setErr(e.message); } };
-  const rows = [['الإيراد المعترف به (التسليمات + أخرى)', calc.pl.revenue], ['مصروفات التشغيل', calc.pl.totalExpenses], ['صافي الربح / الخسارة', calc.pl.netProfit], ['ذمم العملاء', calc.recv], ['ذمم الموردين (مصروفات غير مسددة)', calc.payable], ['أرصدة قروض الشركاء (أصل)', calc.loanBal], ['مساهمات رأس المال', calc.capital], ['توزيعات سابقة', calc.prevDist]];
+  }, [ags, dls, exps, epays, pays, custs, cash, events, animals, loans, reps, led, partners, from, to, c, asExpense]);
+  const allPartners = useCol('partners').rows; const name = (id) => allPartners.find((p) => p.id === id)?.name || '—';
+  const distributedFor = (stId, pid) => round2(led.filter((e) => e.type === 'profit_distribution' && e.settlementId === stId && e.partnerId === pid && !e.voided).reduce((a, e) => a + Number(e.amount), 0));
+  const finalize = async () => { setErr(''); try { if (!confirm('تأكيد اعتماد التسوية؟ سيتم قيد تخصيص الأرباح في دفاتر الشركاء (بدون أي حركة نقدية).')) return; await finalizeSettlement(user, { from, to, currency: c, ...calc.pl, receivables: calc.recv, payables: calc.payable, loanBalances: calc.loanBal, capital: calc.capital, previousDistributions: calc.prevDist }, partners, hist); } catch (e) { setErr(e.message); } };
+  const lines = [
+    ['إيراد الحليب (التسليمات)', calc.pl.milkRevenue], ['إيرادات أخرى', calc.pl.otherIncome], [asExpense ? 'مبيعات المواشي' : 'ربح/خسارة بيع المواشي', calc.pl.animalSales], ['إجمالي الإيراد', calc.pl.revenue, 'b'],
+    ['مصروفات التشغيل', calc.pl.operatingExpenses], ...(asExpense ? [['مشتريات المواشي', calc.pl.animalPurchases]] : []), ['إجمالي المصروفات', calc.pl.totalExpenses, 'b'],
+    ['صافي الربح / الخسارة', calc.pl.netProfit, 'net'],
+    ['ذمم العملاء (حتى نهاية الفترة)', calc.recv, 'i'], ['ذمم الموردين — مصروفات غير مسددة', calc.payable, 'i'], ['أرصدة قروض الشركاء (أصل)', calc.loanBal, 'i'], ['مساهمات رأس المال', calc.capital, 'i'], ['توزيعات نقدية سابقة', calc.prevDist, 'i']];
+  const stDists = see ? led.filter((e) => e.type === 'profit_distribution' && e.settlementId === see.id && !e.voided).sort((a, b) => a.date.localeCompare(b.date)) : [];
   return (
     <div>
       <PageHeader title="تسويات وتوزيع الأرباح" subtitle="التخصيص (قيد محاسبي) منفصل عن التوزيع النقدي الفعلي" />
       <Card title="احتساب مقترح من السجلات الفعلية">
-        <div className="mb-3 flex flex-wrap gap-2"><input type="date" className="input w-full sm:w-40" value={from} onChange={(e) => setFrom(e.target.value)} /><input type="date" className="input w-full sm:w-40" value={to} onChange={(e) => setTo(e.target.value)} /><select className="input w-full sm:w-24" value={c} onChange={(e) => setC(e.target.value)}>{CURRENCIES.map(([v]) => <option key={v}>{v}</option>)}</select></div>
-        <Table rows={rows.map(([l, v], i) => ({ id: i, l, v }))} columns={[{ key: 'l', label: 'البند' }, { key: 'v', label: `المبلغ (${c})`, render: (r) => <b className="num">{fmt(r.v)}</b> }]} />
+        <div className="mb-3 grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:items-end">
+          <label className="block"><span className="mb-1 block text-xs font-bold text-slate-500">من</span><input type="date" dir="ltr" className="input sm:w-40" value={from} onChange={(e) => setFrom(e.target.value)} /></label>
+          <label className="block"><span className="mb-1 block text-xs font-bold text-slate-500">إلى</span><input type="date" dir="ltr" className="input sm:w-40" value={to} onChange={(e) => setTo(e.target.value)} /></label>
+          <label className="col-span-2 block sm:col-span-1"><span className="mb-1 block text-xs font-bold text-slate-500">العملة</span><select className="input sm:w-24" value={c} onChange={(e) => setC(e.target.value)}>{CURRENCIES.map(([v]) => <option key={v}>{v}</option>)}</select></label>
+        </div>
+        {lastTo && <div className="mb-3 flex flex-wrap items-center gap-2 rounded-lg bg-slate-50 p-2 text-xs text-slate-600">آخر تسوية معتمدة ({c}) حتى <b>{lastTo}</b><button type="button" className="btn btn-ghost !px-2.5 !py-1 text-xs" onClick={() => { const d = new Date(`${lastTo}T00:00:00Z`); d.setUTCDate(d.getUTCDate() + 1); setFrom(d.toISOString().slice(0, 10)); setTo(today()); }}>ابدأ من اليوم التالي لها</button></div>}
+        {clash && <div className="mb-3 rounded-lg bg-red-50 p-3 text-sm font-bold text-red-700">هذه الفترة تتداخل مع تسوية معتمدة ({clash.from} ← {clash.to}). اعتمادها سيكرّر توزيع الأرباح على نفس الأيام، لذلك الاعتماد معطّل.</div>}
+        <Table rows={lines.map(([l, v, k], i) => ({ id: i, l, v, k }))} columns={[{ key: 'l', label: 'البند', render: (r) => <span className={r.k === 'b' || r.k === 'net' ? 'font-extrabold' : r.k === 'i' ? 'text-slate-500' : ''}>{r.l}</span> }, { key: 'v', label: `المبلغ (${c})`, render: (r) => <b className={`num ${r.k === 'net' ? (r.v >= 0 ? 'text-emerald-700' : 'text-rose-600') : ''}`}>{fmt(r.v)}</b> }]} />
+        {!asExpense && <div className="mt-2 text-xs text-slate-500">إعداد المواشي الحالي: يُحتسب ربح/خسارة البيع فقط (سعر البيع − تكلفة الحيوان) ولا يُحتسب الشراء كمصروف. يتغيّر من الإعدادات.</div>}
         {!calc.shares.ok && <div className="mt-3 rounded-lg bg-amber-50 p-3 text-sm font-bold text-amber-800">مجموع نسب الأرباح {calc.shares.total}% — يجب أن يساوي 100% قبل التوزيع النسبي (عدّلها من صفحة الشركاء).</div>}
-        {calc.alloc && <><h4 className="mb-1 mt-4 font-bold">التخصيص المقترح</h4><Table rows={calc.alloc.map((a) => ({ id: a.partnerId, ...a }))} columns={[{ key: 'n', label: 'الشريك', render: (r) => name(r.partnerId) }, { key: 'amount', label: 'الحصة', render: (r) => <b className="num">{fmt(r.amount)}</b> }]} /></>}
+        {calc.pl.netProfit < 0 && <div className="mt-3 rounded-lg bg-amber-50 p-3 text-sm font-bold text-amber-800">الفترة خاسرة: التخصيص سيُسجَّل بالسالب على حصص الشركاء (خصم من أرصدتهم) ولا يمكن توزيعه نقدياً.</div>}
+        {calc.alloc && <><h4 className="mb-1 mt-4 font-bold">التخصيص المقترح</h4><Table rows={calc.alloc.map((a) => ({ id: a.partnerId, ...a }))} columns={[{ key: 'n', label: 'الشريك', render: (r) => name(r.partnerId) }, { key: 'pct', label: 'النسبة', render: (r) => `${partners.find((p) => p.id === r.partnerId)?.profitSharePct}%` }, { key: 'amount', label: 'الحصة', render: (r) => <b className="num">{fmt(r.amount)}</b> }]} /></>}
         {err && <div className="mt-2 text-sm font-bold text-red-600">{err}</div>}
-        <div className="mt-4">{can('finalizeSettlement') ? <button className="btn btn-primary" disabled={!calc.alloc} onClick={finalize}>اعتماد التسوية (مدير النظام)</button> : <span className="text-sm text-slate-500">اعتماد التسوية متاح لمدير النظام فقط.</span>}</div>
+        <div className="mt-4">{can('finalizeSettlement') ? <button className="btn btn-primary w-full sm:w-auto" disabled={!calc.alloc || !!clash || from > to} onClick={finalize}>اعتماد التسوية (مدير النظام)</button> : <span className="text-sm text-slate-500">اعتماد التسوية متاح لمدير النظام فقط.</span>}</div>
       </Card>
-      <Card title="سجل التسويات" className="mt-4"><Table rows={[...hist].sort((a, b) => (b.to || '').localeCompare(a.to || ''))} empty={<Empty title="لا توجد تسويات معتمدة" />} columns={[{ key: 'from', label: 'من' }, { key: 'to', label: 'إلى' }, { key: 'currency', label: 'العملة' }, { key: 'netProfit', label: 'صافي الربح', render: (r) => <span className="num">{fmt(r.netProfit)}</span> }, { key: 'al', label: 'التخصيصات', render: (r) => (r.allocations || []).map((a) => `${name(a.partnerId)}: ${fmt(a.amount)}`).join(' | ') },
-        { key: 'd', label: '', render: (r) => can('create') && <button className="btn btn-ghost py-1" onClick={() => setDist(r)}>توزيع نقدي</button> }]} /></Card>
-      {dist && <FormModal open onClose={() => setDist(null)} title="توزيع نقدي فعلي لشريك (منفصل عن التخصيص)" fields={[{ name: 'partnerId', label: 'الشريك', type: 'rel', col: 'partners', required: true }, { name: 'date', label: 'التاريخ', type: 'date', required: true }, { name: 'amount', label: 'المبلغ', type: 'number', required: true, positive: true }, { ...acct, required: true }]} defaults={{ date: today() }}
-        onSubmit={(d) => { const bal = partnerLedger(d.partnerId, led, { currency: dist.currency }).closing; if (d.amount > bal) throw new Error(`المبلغ أكبر من المستحق للشريك (${fmt(bal)})`); return partnerMovement(user, { ...d, type: 'profit_distribution', currency: dist.currency, settlementId: dist.id }); }} />}
+      <Card title="سجل التسويات" className="mt-4"><Table rows={[...hist].sort((a, b) => (b.to || '').localeCompare(a.to || ''))} empty={<Empty title="لا توجد تسويات معتمدة" />} columns={[{ key: 'from', label: 'من' }, { key: 'to', label: 'إلى' }, { key: 'currency', label: 'العملة' }, { key: 'netProfit', label: 'صافي الربح', render: (r) => <span className="num">{fmt(r.netProfit)}</span> },
+        { key: 'al', label: 'الحصص (الموزّع / المتبقي)', render: (r) => <div className="space-y-0.5">{(r.allocations || []).map((a) => { const d = distributedFor(r.id, a.partnerId); return <div key={a.partnerId} className="text-xs"><b>{name(a.partnerId)}</b>: <span className="num">{fmt(a.amount)}</span> — موزّع <span className="num">{fmt(d)}</span> — متبقٍ <b className="num">{fmt(round2(a.amount - d))}</b></div>; })}</div> },
+        { key: 'd', label: '', render: (r) => <div className="flex flex-wrap gap-1">{can('create') && <button className="btn btn-ghost !px-2.5 !py-1 text-xs" onClick={() => setDist(r)}>توزيع نقدي</button>}<button className="btn btn-ghost !px-2.5 !py-1 text-xs" onClick={() => setSee(r)}>التوزيعات</button>
+          {can('finalizeSettlement') && <button className="btn btn-danger !px-2.5 !py-1 text-xs" onClick={async () => { const why = prompt('سبب إلغاء التسوية؟ (يُلغى قيد تخصيص الأرباح)'); if (!why) return; try { await voidSettlement(user, r, led, why); } catch (e) { alert(e.message); } }}>إلغاء التسوية</button>}</div> }]} /></Card>
+      {dist && (() => { const opts = (dist.allocations || []).map((a) => [a.partnerId, round2(a.amount - distributedFor(dist.id, a.partnerId))]).filter(([, rem]) => rem > 0);
+        return <FormModal open onClose={() => setDist(null)} title={`توزيع نقدي من تسوية ${dist.from} ← ${dist.to}`} submitLabel="تسجيل التوزيع"
+          fields={[{ name: 'partnerId', label: 'الشريك (المتبقي من حصته في هذه التسوية)', type: 'select', required: true, options: opts.length ? opts.map(([id, rem]) => [id, `${name(id)} — المتبقي ${fmt(rem)}`]) : [['', 'لا توجد حصص متبقية للتوزيع']] }, { name: 'date', label: 'التاريخ', type: 'date', required: true }, { name: 'amount', label: 'المبلغ', type: 'number', required: true, positive: true }, { ...acct, required: true }]} defaults={{ date: today(), partnerId: '', amount: '' }}
+          onSubmit={(d) => { const al = (dist.allocations || []).find((a) => a.partnerId === d.partnerId); if (!al) throw new Error('الشريك ليس ضمن هذه التسوية'); const rem = round2(al.amount - distributedFor(dist.id, d.partnerId)); if (Number(d.amount) > rem + 0.005) throw new Error(`المبلغ أكبر من المتبقي من حصة الشريك في هذه التسوية (${fmt(rem)})`); return partnerMovement(user, { ...d, type: 'profit_distribution', currency: dist.currency, settlementId: dist.id }); }} />; })()}
+      {see && <Modal open onClose={() => setSee(null)} title={`توزيعات تسوية ${see.from} ← ${see.to}`}>
+        <Table rows={stDists} empty={<Empty title="لا توجد توزيعات نقدية بعد" />} columns={[{ key: 'date', label: 'التاريخ' }, { key: 'p', label: 'الشريك', render: (r) => name(r.partnerId) }, { key: 'amount', label: 'المبلغ', render: (r) => <b className="num">{fmt(r.amount)}</b> },
+          { key: '_a', label: '', render: (r) => can('voidFinancial') && <button className="rounded p-1.5 text-rose-600 hover:bg-rose-50" title="إلغاء التوزيع" onClick={async () => { const why = prompt('سبب إلغاء التوزيع؟ (تُلغى حركة الصندوق أيضاً)'); if (why) await voidDistribution(user, r, cash, why); }}><Ban size={15} /></button> }]} />
+      </Modal>}
     </div>
   );
 }

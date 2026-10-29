@@ -4,9 +4,9 @@ import CrudPage, { FormModal } from '../components/CrudPage';
 import ExportButtons from '../components/ExportButtons';
 import AnimalSale from '../components/AnimalSale';
 import ExchangeModal from '../components/ExchangeModal';
-import { Card, Stat, Table, Badge, Modal, Empty, PageHeader, money, fmt, today } from '../components/ui';
+import { Card, Stat, Table, Badge, Modal, Empty, PageHeader, Avatar, money, fmt, today } from '../components/ui';
 import { useCol, useSettings, createAnimal, saveRecord, commit, newId } from '../data/db';
-import { recordAnimalEvent, partnerMovement } from '../data/ops';
+import { recordAnimalEvent, partnerMovement, voidAnimalCascade, voidAnimalEventCascade } from '../data/ops';
 import { useAuth } from '../data/auth';
 import { customerPosition, customerStatement, partnerLedger, herdState, animalExchange, validateNewAnimal, animalProfile, round2, LEDGER_TYPES } from '../lib/finance';
 import { CURRENCIES, LEDGER_AR, ANIMAL_CATEGORIES } from '../lib/constants';
@@ -121,12 +121,24 @@ export function Partners() {
 }
 
 // ───────── المواشي
-const animalCtx = () => ({ events: useCol('animalEvents').rows, animals: useCol('animals').rows, production: useCol('milkProduction').rows, expenses: useCol('expenses').rows });
+const animalCtx = () => ({ events: useCol('animalEvents').rows, animals: useCol('animals').rows, production: useCol('milkProduction').rows, expenses: useCol('expenses').rows, cash: useCol('cashTransactions').rows });
+const checkCalf = (d, motherTag, animals) => {
+  const c = validateNewAnimal(d.calfTag, animals); if (!c.ok) throw new Error(c.reason === 'duplicate' ? 'رقم الصغير مسجّل مسبقاً' : 'أدخل رقم الصغير');
+  if (String(d.calfTag).trim().toLowerCase() === String(motherTag).trim().toLowerCase()) throw new Error('رقم الصغير يجب أن يختلف عن رقم الأم');
+};
+/** تسجيل صغير لأمّ (جديدة أو موجودة): الحيوان + حدث الولادة/الشراء + حركة الصندوق إن كان له سعر. */
+async function addCalf(u, motherId, mother, d, { origin, date, accountId, currency }) {
+  const tag = String(d.calfTag).trim(); const cost = Number(d.calfCost || 0);
+  const cid = await createAnimal(u, { tag, name: d.calfName || '', category: d.calfCategory || 'heifer_calf', sex: d.calfSex || 'F', breed: d.calfBreed || mother.breed || '', origin, sellerName: mother.sellerName || '', birthDate: d.calfBirthDate || '', acquisitionDate: date, acquisitionCost: cost, currency, healthStatus: d.calfHealth || 'healthy', motherId, pregnant: 'na', withMother: true, photo: d.calfPhoto || '' });
+  const cashRow = origin === 'purchase' && accountId && cost > 0 ? { date, type: 'animal_purchase', direction: 'out', amount: cost, currency, accountId, animalId: cid, description: `شراء ${tag}` } : null;
+  await recordAnimalEvent(u, { animalId: cid, tag, type: origin, date, value: cost, currency, motherId }, cashRow);
+}
 export function Animals() {
   const [sale, setSale] = useState(null); // null | true | animalId
+  const [view, setView] = useState(null); // صورة مكبّرة
   const calfF = (o) => ({ showIf: (v) => v.withCalf === 'yes', ...o });
   const fields = [
-    { name: 'tag', label: 'رقم الحيوان (Tag)', type: 'text', required: true }, { name: 'name', label: 'الاسم', type: 'text' },
+    { name: 'tag', label: 'رقم الحيوان (Tag)', type: 'text', required: true }, { name: 'name', label: 'الاسم', type: 'text' }, { name: 'photo', label: 'صورة الحيوان', type: 'image' },
     { name: 'category', label: 'الفئة', type: 'select', required: true, options: ANIMAL_CATEGORIES, default: 'cow' }, { name: 'sex', label: 'الجنس', type: 'select', required: true, options: [['F', 'أنثى'], ['M', 'ذكر']] }, { name: 'breed', label: 'السلالة', type: 'text' },
     { name: 'origin', label: 'المصدر', type: 'select', required: true, options: [['purchase', 'شراء'], ['birth', 'مولود بالمزرعة'], ['opening', 'رصيد افتتاحي (موجود مسبقاً)']] },
     { name: 'sellerName', label: 'جهة الشراء (البائع/السوق)', type: 'text', showIf: (v) => v.origin === 'purchase' },
@@ -138,31 +150,37 @@ export function Animals() {
     { name: 'daysToBirth', label: 'عدد الأيام المتبقية على الولادة (من تاريخ الشراء)', type: 'number', min: 0, showIf: (v) => v.sex === 'F' && v.pregnant === 'yes' },
     { name: 'healthStatus', label: 'الحالة الصحية', type: 'select', options: [['healthy', 'سليم'], ['sick', 'مريض']], default: 'healthy' },
     { name: 'motherId', label: 'الأم', type: 'rel', col: 'animals', optLabel: animalOpt }, { name: 'fatherId', label: 'الأب', type: 'rel', col: 'animals', optLabel: animalOpt },
-    { name: 'withCalf', label: 'هل معها عجل / عجلة صغيرة؟', type: 'select', options: [['no', 'لا'], ['yes', 'نعم — سجّل الصغير بنفس التفاصيل']], default: 'no' },
+    { name: 'withCalf', label: 'هل معها عجل / عجلة صغيرة؟ (تقدر تضيفه لاحقاً من التعديل)', type: 'select', options: [['no', 'لا'], ['yes', 'نعم — سجّل الصغير']], default: 'no' },
     calfF({ name: 'calfTag', label: 'رقم الصغير *', type: 'text' }), calfF({ name: 'calfName', label: 'اسم الصغير', type: 'text' }),
     calfF({ name: 'calfCategory', label: 'فئة الصغير', type: 'select', options: ANIMAL_CATEGORIES, default: 'heifer_calf' }), calfF({ name: 'calfSex', label: 'جنس الصغير', type: 'select', options: [['F', 'أنثى'], ['M', 'ذكر']], default: 'F' }),
     calfF({ name: 'calfBreed', label: 'سلالة الصغير (فارغ = سلالة الأم)', type: 'text' }), calfF({ name: 'calfBirthDate', label: 'تاريخ ولادة الصغير', type: 'date' }),
-    calfF({ name: 'calfCost', label: 'سعر الصغير (0 أو فارغ إن كان ضمن سعر الأم)', type: 'number', min: 0 }), calfF({ name: 'calfHealth', label: 'الحالة الصحية للصغير', type: 'select', options: [['healthy', 'سليم'], ['sick', 'مريض']], default: 'healthy' }),
+    calfF({ name: 'calfCost', label: 'سعر الصغير (0 أو فارغ إن كان ضمن سعر الأم)', type: 'number', min: 0 }), calfF({ name: 'calfHealth', label: 'الحالة الصحية للصغير', type: 'select', options: [['healthy', 'سليم'], ['sick', 'مريض']], default: 'healthy' }), calfF({ name: 'calfPhoto', label: 'صورة الصغير', type: 'image' }),
+    calfF({ ...acct, name: 'calfAccountId', label: 'الصندوق الذي دُفع منه سعر الصغير (اختياري)', showIf: (v) => v.withCalf === 'yes' && Number(v.calfCost) > 0 && v.origin === undefined }),
     { name: 'notes', label: 'ملاحظات', type: 'textarea' }];
   return (<>
     <CrudPage title="المواشي والعجول" subtitle="رقم الحيوان فريد. اضغط أيقونة التفاصيل لعرض بيانات الحيوان وبيعه" col="animals" searchKeys={['tag', 'name', 'breed']} useCtx={animalCtx}
       extraHeader={<button className="btn btn-ghost" onClick={() => setSale(true)}>بيع حيوان</button>}
-      fields={fields} createOnlyFields={['origin', 'accountId', 'withCalf', 'calfTag', 'calfName', 'calfCategory', 'calfSex', 'calfBreed', 'calfBirthDate', 'calfCost', 'calfHealth']}
+      fields={fields} createOnlyFields={['origin', 'accountId']} onVoid={(u, r, ctx, why) => voidAnimalCascade(u, r, ctx, why)}
       create={async (u, d, { animals }) => {
         const ok = validateNewAnimal(d.tag, animals); if (!ok.ok) throw new Error(ok.reason === 'duplicate' ? 'رقم الحيوان مسجّل مسبقاً' : 'رقم الحيوان مطلوب');
-        const calf = d.withCalf === 'yes';
-        if (calf) { const c = validateNewAnimal(d.calfTag, animals); if (!c.ok) throw new Error(c.reason === 'duplicate' ? 'رقم الصغير مسجّل مسبقاً' : 'أدخل رقم الصغير'); if (String(d.calfTag).trim().toLowerCase() === String(d.tag).trim().toLowerCase()) throw new Error('رقم الصغير يجب أن يختلف عن رقم الأم'); }
-        const { origin, accountId, withCalf, calfTag, calfName, calfCategory, calfSex, calfBreed, calfBirthDate, calfCost, calfHealth, ...rest } = d;
+        const calf = d.withCalf === 'yes'; if (calf) checkCalf(d, d.tag, animals);
+        const { origin, accountId, withCalf, calfTag, calfName, calfCategory, calfSex, calfBreed, calfBirthDate, calfCost, calfHealth, calfPhoto, calfAccountId, ...rest } = d;
         const id = await createAnimal(u, { ...rest, origin, pregnant: d.sex === 'F' ? d.pregnant || 'na' : 'na', healthStatus: d.healthStatus || 'healthy' });
-        const buy = (cost, tag) => (origin === 'purchase' && accountId && Number(cost) > 0 ? { date: d.acquisitionDate, type: 'animal_purchase', direction: 'out', amount: Number(cost), currency: d.currency, accountId, description: `شراء ${tag}` } : null);
-        await recordAnimalEvent(u, { animalId: id, tag: d.tag, type: origin, date: d.acquisitionDate, value: d.acquisitionCost || 0, currency: d.currency }, buy(d.acquisitionCost, d.tag));
-        if (calf) {
-          const cid = await createAnimal(u, { tag: calfTag, name: calfName || '', category: calfCategory || 'heifer_calf', sex: calfSex || 'F', breed: calfBreed || d.breed || '', origin, sellerName: d.sellerName || '', birthDate: calfBirthDate || '', acquisitionDate: d.acquisitionDate, acquisitionCost: Number(calfCost || 0), currency: d.currency, healthStatus: calfHealth || 'healthy', motherId: id, pregnant: 'na', withMother: true });
-          await recordAnimalEvent(u, { animalId: cid, tag: calfTag, type: origin, date: d.acquisitionDate, value: Number(calfCost || 0), currency: d.currency, motherId: id }, buy(calfCost, calfTag));
-        } }}
-      summary={(rows, ctx) => { const h = herdState(ctx.events); const soon = rows.filter((r) => h[r.id]?.active && (animalProfile(r, ctx).daysToCalving ?? 999) <= 30 && animalProfile(r, ctx).daysToCalving !== null).length;
+        const buy = (cost, tag, aid) => (origin === 'purchase' && accountId && Number(cost) > 0 ? { date: d.acquisitionDate, type: 'animal_purchase', direction: 'out', amount: Number(cost), currency: d.currency, accountId, animalId: aid, description: `شراء ${tag}` } : null);
+        await recordAnimalEvent(u, { animalId: id, tag: d.tag, type: origin, date: d.acquisitionDate, value: d.acquisitionCost || 0, currency: d.currency }, buy(d.acquisitionCost, d.tag, id));
+        if (calf) await addCalf(u, id, { ...rest, id }, d, { origin, date: d.acquisitionDate, accountId, currency: d.currency });
+      }}
+      update={async (u, d, edit, { animals }) => {
+        const { withCalf, calfTag, calfName, calfCategory, calfSex, calfBreed, calfBirthDate, calfCost, calfHealth, calfPhoto, calfAccountId, ...rest } = d;
+        if (String(rest.tag || '').trim().toLowerCase() !== String(edit.tag).trim().toLowerCase()) { const ok = validateNewAnimal(rest.tag, animals.filter((a) => a.id !== edit.id)); if (!ok.ok) throw new Error(ok.reason === 'duplicate' ? 'رقم الحيوان مسجّل مسبقاً' : 'رقم الحيوان مطلوب'); }
+        const calf = withCalf === 'yes'; if (calf) checkCalf(d, rest.tag, animals);
+        await saveRecord(u, 'animals', rest, edit.id);
+        // إضافة صغير لحيوان موجود: مولود بالمزرعة (أو مشترى لو أدخلت له سعراً)
+        if (calf) { const cost = Number(calfCost || 0); await addCalf(u, edit.id, { ...edit, ...rest }, d, { origin: cost > 0 ? 'purchase' : 'birth', date: calfBirthDate || today(), accountId: calfAccountId, currency: edit.currency || d.currency || 'SYP' }); }
+      }}
+      summary={(rows, ctx) => { const h = herdState(ctx.events, ctx.animals); const soon = rows.filter((r) => h[r.id]?.active && (animalProfile(r, ctx).daysToCalving ?? 999) <= 30 && animalProfile(r, ctx).daysToCalving !== null).length;
         return <div className="grid grid-cols-2 gap-3 sm:grid-cols-5"><Stat label="القطيع النشط" value={Object.values(h).filter((x) => x.active).length} /><Stat label="مريض" value={rows.filter((r) => h[r.id]?.active && r.healthStatus === 'sick').length} tone="red" /><Stat label="ولادات خلال 30 يوم" value={soon} tone="amber" /><Stat label="إجمالي السجلات" value={rows.length} /><Stat label="خرجت من القطيع" value={Object.values(h).filter((x) => !x.active).length} /></div>; }}
-      cols={(ctx) => { const h = herdState(ctx.events); return [{ key: 'tag', label: 'الرقم' }, { key: 'name', label: 'الاسم' }, { key: 'category', label: 'الفئة', render: (r) => CAT_AR[r.category] || '—' }, { key: 'sex', label: 'الجنس', hideMobile: true, render: (r) => (r.sex === 'F' ? 'أنثى' : 'ذكر') }, { key: 'breed', label: 'السلالة', hideMobile: true }, { key: 'acquisitionDate', label: 'الشراء', hideMobile: true },
+      cols={(ctx) => { const h = herdState(ctx.events, ctx.animals); return [{ key: 'photo', label: 'الصورة', render: (r) => <Avatar src={r.photo} size={44} alt={r.tag} onClick={r.photo ? () => setView(r) : undefined} /> }, { key: 'tag', label: 'الرقم' }, { key: 'name', label: 'الاسم' }, { key: 'category', label: 'الفئة', render: (r) => CAT_AR[r.category] || '—' }, { key: 'sex', label: 'الجنس', hideMobile: true, render: (r) => (r.sex === 'F' ? 'أنثى' : 'ذكر') }, { key: 'breed', label: 'السلالة', hideMobile: true }, { key: 'acquisitionDate', label: 'الشراء', hideMobile: true },
         { key: 'cost', label: 'سعر الشراء', render: (r) => <span className="num">{r.acquisitionCost ? fmt(r.acquisitionCost) : '—'}</span> }, { key: 'age', label: 'العمر (شهر)', render: (r) => animalProfile(r, ctx).ageMonths ?? '—' },
         { key: 'mp', label: 'حليب عند الشراء', hideMobile: true, render: (r) => (r.milkAtPurchase ? <span className="num">{fmt(r.milkAtPurchase)} لتر/يوم</span> : '—') },
         { key: 'milk', label: 'حليب فعلي', render: (r) => { const p = animalProfile(r, ctx); return p.milkTotal ? <span className="num">{fmt(p.milkTotal)} <span className="text-xs text-slate-400">({fmt(p.milkAvg)}/يوم)</span></span> : '—'; } },
@@ -170,6 +188,7 @@ export function Animals() {
         { key: 'st', label: 'الحالة', render: (r) => { const s = h[r.id]; const t = s?.active ? (r.healthStatus === 'sick' ? 'مريض' : 'نشط') : s ? { sale: 'مباع', death: 'نافق', transfer_out: 'منقول', exchange_out: 'مبادَل' }[s.last] || 'خرج' : 'بلا حدث'; return <Badge tone={t === 'نشط' ? 'green' : t === 'مريض' ? 'red' : s ? 'gray' : 'amber'}>{t}</Badge>; } }]; }}
       rowActions={(r) => <button className="rounded p-1.5 hover:bg-slate-100" title="تفاصيل وبيع" onClick={() => setSale(r.id)}><Info size={15} /></button>} />
     {sale && <AnimalSale preselectId={sale === true ? null : sale} onClose={() => setSale(null)} />}
+    {view && <Modal open onClose={() => setView(null)} title={`${view.tag} ${view.name || ''}`}><img src={view.photo} alt={view.tag} className="mx-auto max-h-[70dvh] w-full rounded-xl object-contain" /></Modal>}
   </>);
 }
 const evTypes = [['birth', 'ولادة'], ['purchase', 'شراء'], ['death', 'نفوق']]; // sale = dedicated dialog (search by name/tag)
@@ -177,18 +196,18 @@ const EVT_AR = { birth: 'ولادة', purchase: 'شراء', death: 'نفوق', s
 const animalLabel = (r) => `${r.tag}${r.name ? ' - ' + r.name : ''}`;
 export function AnimalEvents() {
   const [sale, setSale] = useState(false);
-  return (<><CrudPage extraHeader={<button className="btn btn-ghost" onClick={() => setSale(true)}>بيع حيوان</button>} title="المواليد والوفيات والمشتريات" subtitle="كل حدث يحدّث القطيع النشط ويُنشئ القيد المالي المرتبط" col="animalEvents" noEdit useCtx={animalCtx} searchKeys={['tag', 'type']} filter={(r) => !String(r.type).startsWith('exchange') && r.type !== 'transfer_out' && r.type !== 'opening'}
+  return (<><CrudPage extraHeader={<button className="btn btn-ghost" onClick={() => setSale(true)}>بيع حيوان</button>} title="المواليد والوفيات والمشتريات" subtitle="كل حدث يحدّث القطيع النشط ويُنشئ القيد المالي المرتبط" col="animalEvents" noEdit useCtx={animalCtx} searchKeys={['tag', 'type']} onVoid={(u, r, ctx, why) => voidAnimalEventCascade(u, r, ctx, why)} filter={(r) => !String(r.type).startsWith('exchange') && r.type !== 'transfer_out' && r.type !== 'opening'}
     fields={[{ name: 'type', label: 'نوع الحدث', type: 'select', options: evTypes, required: true, default: 'birth' }, { name: 'date', label: 'التاريخ', type: 'date', required: true },
       { name: 'animalId', label: 'الحيوان (للنفوق/البيع)', type: 'rel', col: 'animals', optLabel: animalLabel }, { name: 'newTag', label: 'رقم الحيوان الجديد (للولادة/الشراء)', type: 'text' }, { name: 'newName', label: 'الاسم', type: 'text' }, { name: 'breed', label: 'السلالة', type: 'text' }, { name: 'sex', label: 'الجنس', type: 'select', options: [['F', 'أنثى'], ['M', 'ذكر']] }, { name: 'motherId', label: 'الأم (للولادة)', type: 'rel', col: 'animals', optLabel: animalLabel }, { name: 'fatherId', label: 'الأب (للولادة)', type: 'rel', col: 'animals', optLabel: animalLabel },
       { name: 'value', label: 'القيمة (شراء/بيع)', type: 'number', min: 0 }, cur, { ...acct }, { name: 'notes', label: 'ملاحظات', type: 'textarea' }]}
     create={async (u, d, { animals, events }) => {
-      const h = herdState(events); let animalId = d.animalId, tag = animals.find((a) => a.id === animalId)?.tag;
+      const h = herdState(events, animals); let animalId = d.animalId, tag = animals.find((a) => a.id === animalId)?.tag;
       if (d.type === 'birth' || d.type === 'purchase') {
         const ok = validateNewAnimal(d.newTag, animals); if (!ok.ok) throw new Error(ok.reason === 'duplicate' ? 'رقم الحيوان مسجّل مسبقاً' : 'أدخل رقم الحيوان الجديد');
         animalId = await createAnimal(u, { tag: d.newTag, name: d.newName || '', breed: d.breed || '', sex: d.sex || 'F', acquisitionDate: d.date, acquisitionCost: d.type === 'purchase' ? Number(d.value || 0) : 0, currency: d.currency, motherId: d.motherId || '', fatherId: d.fatherId || '', category: d.type === 'birth' ? 'heifer_calf' : 'cow', origin: d.type === 'birth' ? 'birth' : 'purchase', healthStatus: 'healthy', birthDate: d.type === 'birth' ? d.date : '' }); tag = d.newTag;
       } else { if (!animalId) throw new Error('اختر الحيوان'); if (!h[animalId]?.active) throw new Error('هذا الحيوان غير موجود ضمن القطيع النشط'); }
       const v = Number(d.value || 0); if ((d.type === 'sale' || d.type === 'purchase') && v > 0 && !d.accountId) throw new Error('اختر الصندوق لتسجيل الحركة النقدية');
-      const cash = v > 0 && d.type === 'purchase' ? { date: d.date, type: 'animal_purchase', direction: 'out', amount: v, currency: d.currency, accountId: d.accountId, description: `شراء ${tag}` } : v > 0 && d.type === 'sale' ? { date: d.date, type: 'animal_sale', direction: 'in', amount: v, currency: d.currency, accountId: d.accountId, description: `بيع ${tag}` } : null;
+      const cash = v > 0 && d.type === 'purchase' ? { date: d.date, type: 'animal_purchase', direction: 'out', amount: v, currency: d.currency, accountId: d.accountId, animalId, description: `شراء ${tag}` } : v > 0 && d.type === 'sale' ? { date: d.date, type: 'animal_sale', direction: 'in', amount: v, currency: d.currency, accountId: d.accountId, description: `بيع ${tag}` } : null;
       await recordAnimalEvent(u, { animalId, tag, type: d.type, date: d.date, value: v, currency: d.currency, motherId: d.motherId || '', notes: d.notes || '' }, cash); }}
     cols={() => [{ key: 'date', label: 'التاريخ' }, { key: 'type', label: 'الحدث', render: (r) => <Badge tone={r.type === 'death' ? 'red' : r.type === 'birth' ? 'green' : 'blue'}>{EVT_AR[r.type]}</Badge> }, { key: 'tag', label: 'الحيوان' }, { key: 'value', label: 'القيمة', render: (r) => (r.value ? <span className="num">{fmt(r.value)} {r.currency}</span> : '—') }, { key: 'notes', label: 'ملاحظات' }]} />
     {sale && <AnimalSale onClose={() => setSale(false)} />}</>);

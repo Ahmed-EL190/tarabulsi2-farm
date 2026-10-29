@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { Modal, Toast, Field, fmt, today } from './ui';
+import { Modal, Toast, Field, Avatar, fmt, today } from './ui';
 import AnimalPicker from './AnimalPicker';
 import { useCol } from '../data/db';
 import { sellAnimal } from '../data/ops';
@@ -16,7 +16,7 @@ export default function AnimalSale({ onClose, preselectId = null }) {
   const animals = useCol('animals').rows.filter((a) => !a.voided);
   const events = useCol('animalEvents').rows; const production = useCol('milkProduction').rows; const expenses = useCol('expenses').rows;
   const accounts = useCol('cashAccounts').rows.filter((a) => !a.voided);
-  const herd = useMemo(() => herdState(events), [events]);
+  const herd = useMemo(() => herdState(events, animals), [events, animals]); // eslint-disable-line
   const [selId, setSelId] = useState(preselectId);
   const [f, setF] = useState({ date: today(), price: '', currency: 'SYP', accountId: '', buyerName: '', notes: '' });
   const [err, setErr] = useState(''); const [busy, setBusy] = useState(false);
@@ -47,6 +47,7 @@ export default function AnimalSale({ onClose, preselectId = null }) {
       <Toast msg={err} />
       <div className="mb-3"><AnimalPicker animals={animals} value={selId} onChange={setSelId} filter={(a) => herd[a.id]?.active} autoFocus={!preselectId} /></div>
       {animal && (<>
+        {animal.photo && <div className="mb-3 flex justify-center"><img src={animal.photo} alt={animal.tag} className="max-h-56 w-full rounded-xl object-contain sm:w-auto" /></div>}
         <div className="mb-3 grid grid-cols-2 gap-x-3 gap-y-2 rounded-xl bg-slate-50 p-3 text-sm sm:grid-cols-3 lg:grid-cols-4">
           {details.map(([l, v]) => <div key={l} className="min-w-0"><div className="text-xs text-slate-500">{l}</div><div className="break-words font-bold">{v === undefined || v === null || v === '' ? '—' : v}</div></div>)}
         </div>

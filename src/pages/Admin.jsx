@@ -49,7 +49,7 @@ export function Settings() {
           <Field label="اسم المزرعة"><input className="input" value={v.farmName} onChange={(e) => set('farmName', e.target.value)} /></Field>
           <Field label="العملة الأساسية"><select className="input" value={v.baseCurrency} onChange={(e) => set('baseCurrency', e.target.value)}>{CURRENCIES.map(([c, l]) => <option key={c} value={c}>{l}</option>)}</select></Field>
           <Field label="سعر الصرف USD → SYP (للتحويل الصريح فقط — لا تُجمع العملات تلقائياً)"><input className="input" type="number" dir="ltr" value={rates['USD->SYP'] || ''} onChange={(e) => set('rates', { ...rates, 'USD->SYP': Number(e.target.value) })} /></Field>
-          <label className="flex items-start gap-2 text-sm font-bold sm:items-center sm:pt-6"><input type="checkbox" checked={!!v.animalPurchaseAsExpense} onChange={(e) => set('animalPurchaseAsExpense', e.target.checked)} />احتساب شراء الحيوانات كمصروف في الأرباح (كما في ملف Excel الأصلي)</label>
+          <label className="flex items-start gap-2 text-sm font-bold sm:items-center sm:pt-6"><input type="checkbox" checked={!!v.animalPurchaseAsExpense} onChange={(e) => set('animalPurchaseAsExpense', e.target.checked)} />احتساب شراء الحيوانات كمصروف وبيعها كإيراد كامل (كما في ملف Excel الأصلي). عند إلغاء التفعيل: يُحتسب ربح/خسارة البيع فقط</label>
         </div>
         {can('manageUsers') ? <button className="btn btn-primary mt-4" onClick={save}>حفظ</button> : <p className="mt-3 text-sm text-slate-500">التعديل لمدير النظام فقط.</p>}
       </Card>

@@ -38,7 +38,7 @@ export default function Dashboard() {
   const ags = useCol('milkSales').rows; const dls = useCol('milkDeliveries').rows;
   const custs = useCol('customers').rows; const exps = useCol('expenses').rows;
   const cash = useCol('cashTransactions').rows; const partners = useCol('partners').rows.filter((p) => !p.voided);
-  const ledger = useCol('partnerCapitalTransactions').rows; const events = useCol('animalEvents').rows;
+  const ledger = useCol('partnerCapitalTransactions').rows; const events = useCol('animalEvents').rows; const animalsAll = useCol('animals').rows;
   const t = today();
 
   // الافتراضي: كل الأيام
@@ -73,7 +73,7 @@ export default function Dashboard() {
     const byCust = {}; live.forEach((x) => { const c = custs.find((c) => c.id === x.customerId)?.name || '—'; byCust[c] = (byCust[c] || 0) + Number(x.qty) * priceOf(x); });
     const sales = Object.entries(byCust).map(([name, value]) => ({ name, value: round2(value) })).sort((a, b) => b.value - a.value).slice(0, 5);
     const milkSales = round2(live.filter((x) => (x.currency || 'SYP') === 'SYP').reduce((a, x) => a + Number(x.qty) * priceOf(x), 0));
-    const animalSales = round2(events.filter((e) => e.type === 'sale' && !e.voided && inR(e.date) && (e.currency || 'SYP') === 'SYP').reduce((a, e) => a + Number(e.value || 0), 0));
+    const animalSales = round2(events.filter((e) => e.type === 'sale' && !e.voided && !animalsAll.find((a) => a.id === e.animalId)?.voided && inR(e.date) && (e.currency || 'SYP') === 'SYP').reduce((a, e) => a + Number(e.value || 0), 0));
     const salesTotal = round2(milkSales + animalSales);
     const cat = {}; operatingExpenses(exps, { currency: 'SYP', from: from || undefined, to: to || undefined }).forEach((e) => { cat[e.category] = (cat[e.category] || 0) + Number(e.amount); });
     const expCat = Object.entries(cat).map(([k, v]) => ({ name: catLabel(k), value: v }));
@@ -82,11 +82,11 @@ export default function Dashboard() {
     const sh = (n) => prod.filter((p) => p.shift === n).reduce((a, p) => a + Number(p.liters || 0), 0);
     return { trend, monthly, sales, salesTotal, expCat, bal: byCur, morning: sh('morning'), evening: sh('evening'),
       expPeriod: sumByCurrency(operatingExpenses(exps, { from: from || undefined, to: to || undefined }), (e) => e.amount),
-      herd: Object.values(herdState(events)).filter((x) => x.active).length,
+      herd: Object.values(herdState(events, animalsAll)).filter((x) => x.active).length,
       pBal: partners.map((p) => ({ ...p, bal: partnerLedger(p.id, ledger, { currency: 'SYP' }).closing })),
       capital: partners.reduce((a, p) => a + Number(p.initialCapital || 0), 0),
       recent: [...cash].filter((c) => !c.voided && inR(c.date)).sort((a, b) => b.date.localeCompare(a.date)).slice(0, 5) };
-  }, [prodAll, ags, dls, custs, exps, cash, partners, ledger, events, t, from, to]); // eslint-disable-line
+  }, [prodAll, ags, dls, custs, exps, cash, partners, ledger, events, animalsAll, t, from, to]); // eslint-disable-line
   const cashLine = Object.keys(d.bal).length ? Object.entries(d.bal).map(([c, v]) => money(v, c)).join('  |  ') : money(0);
   const hasProd = d.trend.some((x) => x.morning || x.evening);
   const long = new Date().toLocaleDateString('ar-SY', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });

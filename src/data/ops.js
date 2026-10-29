@@ -3,7 +3,7 @@ import { serverTimestamp } from 'firebase/firestore';
 import { commit, nextNumber, newId } from './db';
 import { validateDelivery, validateExpensePayment, partnerFundedExpenseEntry, makeTransfer, allocateProfit } from '../lib/finance';
 
-const today = () => new Date().toISOString().slice(0, 10);
+const today = () => new Date().toLocaleDateString('en-CA'); // تاريخ محلي
 
 export async function createAgreement(user, a) {
   const number = await nextNumber('agreement', 'AG');
@@ -46,9 +46,10 @@ export const reimbursePartner = (user, p) => commit(user, [
 export async function partnerMovement(user, m) {
   const map = { capital_contribution: ['capital_contribution', 'in'], additional_capital: ['capital_contribution', 'in'], withdrawal: ['partner_withdrawal', 'out'], profit_distribution: ['profit_distribution', 'out'] };
   const [cashType, dir] = map[m.type];
+  const lid = newId('partnerCapitalTransactions');
   return commit(user, [
-    { col: 'partnerCapitalTransactions', data: { partnerId: m.partnerId, date: m.date, type: m.type, amount: m.amount, currency: m.currency, note: m.note || '', settlementId: m.settlementId || null } },
-    { col: 'cashTransactions', data: { date: m.date, type: cashType, direction: dir, amount: m.amount, currency: m.currency, accountId: m.accountId, partnerId: m.partnerId } },
+    { col: 'partnerCapitalTransactions', id: lid, data: { partnerId: m.partnerId, date: m.date, type: m.type, amount: m.amount, currency: m.currency, note: m.note || '', settlementId: m.settlementId || null } },
+    { col: 'cashTransactions', data: { date: m.date, type: cashType, direction: dir, amount: m.amount, currency: m.currency, accountId: m.accountId, partnerId: m.partnerId, ledgerEntryId: lid } },
   ]);
 }
 export async function createLoan(user, l) {
@@ -71,7 +72,10 @@ export const transferCash = (user, t) => { const id = newId('cashTransactions');
 export const addOtherIncome = (user, t) => commit(user, [{ col: 'cashTransactions', data: { ...t, type: 'other_income', direction: 'in' } }]);
 
 /** Finalising a settlement writes allocation entries to partner ledgers. It creates NO cash movement. */
-export async function finalizeSettlement(user, s, partners) {
+export async function finalizeSettlement(user, s, partners, existing = []) {
+  if (!s.from || !s.to || s.from > s.to) throw new Error('الفترة غير صحيحة: تاريخ البداية يجب ألا يتجاوز النهاية');
+  const clash = existing.find((x) => !x.voided && x.status !== 'voided' && (x.currency || 'SYP') === s.currency && !(s.to < x.from || s.from > x.to));
+  if (clash) throw new Error(`هذه الفترة تتداخل مع تسوية معتمدة سابقاً (${clash.from} ← ${clash.to}). اعتماد تسويتين لنفس الأيام يكرّر توزيع الأرباح. ابدأ من اليوم التالي لآخر تسوية أو ألغِ السابقة.`);
   const alloc = allocateProfit(s.netProfit, partners);
   const id = newId('settlements');
   return commit(user, [
@@ -183,3 +187,46 @@ export async function updateDelivery(user, agreement, deliveries, del, d) {
   return commit(user, [{ col: 'milkDeliveries', id: del.id, merge: true, data: { date: d.date, qty, pricePerLiter: price, notes: d.notes || '' } }], 'update');
 }
 export const voidDelivery = (user, del, reason) => commit(user, [{ col: 'milkDeliveries', id: del.id, merge: true, data: voidData(reason), action: 'void' }], 'void');
+
+// ───────────── إلغاء متسلسل: إلغاء سجل يلغي كل ما يتبعه (حتى لا يبقى أثره في الصندوق أو الأرباح) ─────────────
+export async function voidExpenseCascade(user, expense, { pays = [], cash = [], ledger = [] } = {}, reason) {
+  const ops = [{ col: 'expenses', id: expense.id, merge: true, data: voidData(reason), action: 'void' }];
+  for (const p of pays.filter((p) => p.expenseId === expense.id && !p.voided)) {
+    ops.push({ col: 'expensePayments', id: p.id, merge: true, data: voidData(reason), action: 'void' });
+    cash.filter((t) => t.expensePaymentId === p.id && !t.voided).forEach((t) => ops.push({ col: 'cashTransactions', id: t.id, merge: true, data: voidData(reason), action: 'void' }));
+    ledger.filter((t) => t.expensePaymentId === p.id && !t.voided).forEach((t) => ops.push({ col: 'partnerCapitalTransactions', id: t.id, merge: true, data: voidData(reason), action: 'void' }));
+  }
+  return commit(user, ops, 'void');
+}
+const animalCash = (cash, animalId, tag, evs) => cash.filter((t) => !t.voided && ['animal_purchase', 'animal_sale'].includes(t.type)
+  && (t.animalId === animalId || (!t.animalId && t.description?.startsWith(t.type === 'animal_purchase' ? `شراء ${tag}` : `بيع ${tag}`) && evs.some((e) => e.date === t.date))));
+/** إلغاء حيوان: الحيوان + كل أحداثه + حركات الصندوق الخاصة بشرائه/بيعه. */
+export async function voidAnimalCascade(user, animal, { events = [], cash = [] } = {}, reason) {
+  const evs = events.filter((e) => e.animalId === animal.id && !e.voided);
+  const ops = [{ col: 'animals', id: animal.id, merge: true, data: voidData(reason), action: 'void' }];
+  evs.forEach((e) => ops.push({ col: 'animalEvents', id: e.id, merge: true, data: voidData(reason), action: 'void' }));
+  animalCash(cash, animal.id, animal.tag, evs).forEach((t) => ops.push({ col: 'cashTransactions', id: t.id, merge: true, data: voidData(reason), action: 'void' }));
+  return commit(user, ops, 'void');
+}
+/** إلغاء حدث (بيع/شراء/نفوق...) مع حركة الصندوق المرتبطة به. */
+export async function voidAnimalEventCascade(user, ev, { cash = [] } = {}, reason) {
+  const ops = [{ col: 'animalEvents', id: ev.id, merge: true, data: voidData(reason), action: 'void' }];
+  const want = ev.type === 'sale' ? 'animal_sale' : ev.type === 'purchase' ? 'animal_purchase' : null;
+  if (want) animalCash(cash.filter((t) => t.type === want), ev.animalId, ev.tag, [ev]).filter((t) => t.date === ev.date && Number(t.amount) === Number(ev.value)).slice(0, 1)
+    .forEach((t) => ops.push({ col: 'cashTransactions', id: t.id, merge: true, data: voidData(reason), action: 'void' }));
+  return commit(user, ops, 'void');
+}
+/** إلغاء تسوية معتمدة (فقط لو لا توجد توزيعات نقدية مرتبطة بها). */
+export async function voidSettlement(user, st, ledger = [], reason) {
+  if (ledger.some((e) => e.type === 'profit_distribution' && e.settlementId === st.id && !e.voided)) throw new Error('توجد توزيعات نقدية مرتبطة بهذه التسوية — ألغِها أولاً.');
+  const ops = [{ col: 'settlements', id: st.id, merge: true, data: voidData(reason), action: 'void' }];
+  ledger.filter((e) => e.type === 'profit_allocation' && e.settlementId === st.id && !e.voided).forEach((e) => ops.push({ col: 'partnerCapitalTransactions', id: e.id, merge: true, data: voidData(reason), action: 'void' }));
+  return commit(user, ops, 'void');
+}
+/** إلغاء توزيع نقدي: قيد الشريك + حركة الصندوق. */
+export async function voidDistribution(user, entry, cash = [], reason) {
+  const t = cash.find((x) => !x.voided && x.type === 'profit_distribution' && (x.ledgerEntryId === entry.id || (!x.ledgerEntryId && x.partnerId === entry.partnerId && x.date === entry.date && Number(x.amount) === Number(entry.amount) && x.currency === entry.currency)));
+  const ops = [{ col: 'partnerCapitalTransactions', id: entry.id, merge: true, data: voidData(reason), action: 'void' }];
+  if (t) ops.push({ col: 'cashTransactions', id: t.id, merge: true, data: voidData(reason), action: 'void' });
+  return commit(user, ops, 'void');
+}
