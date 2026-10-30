@@ -84,7 +84,8 @@ export default function Dashboard() {
       expPeriod: sumByCurrency(operatingExpenses(exps, { from: from || undefined, to: to || undefined }), (e) => e.amount),
       herd: Object.values(herdState(events, animalsAll)).filter((x) => x.active).length,
       pBal: partners.map((p) => ({ ...p, bal: partnerLedger(p.id, ledger, { currency: 'SYP' }).closing })),
-      capital: partners.reduce((a, p) => a + Number(p.initialCapital || 0), 0),
+      capital: partners.reduce((a, p) => a + Number(p.initialCapital || 0), 0) + ledger.filter((e) => ['capital_contribution', 'additional_capital'].includes(e.type) && !e.voided && !e.opening && !e.animalId && (e.currency || 'SYP') === 'SYP').reduce((a, e) => a + Number(e.amount || 0), 0),
+      capitalUsed: round2(events.filter((e) => !e.voided && e.type === 'purchase' && e.paidFrom === 'capital' && (e.currency || 'SYP') === 'SYP' && !animalsAll.find((a) => a.id === e.animalId)?.voided).reduce((a, e) => a + Number(e.value || 0), 0)),
       recent: [...cash].filter((c) => !c.voided && inR(c.date)).sort((a, b) => b.date.localeCompare(a.date)).slice(0, 5) };
   }, [prodAll, ags, dls, custs, exps, cash, partners, ledger, events, animalsAll, t, from, to]); // eslint-disable-line
   const cashLine = Object.keys(d.bal).length ? Object.entries(d.bal).map(([c, v]) => money(v, c)).join('  |  ') : money(0);
@@ -104,10 +105,10 @@ export default function Dashboard() {
       <PeriodFilter preset={preset} setPreset={setPreset} cFrom={cFrom} setCFrom={setCFrom} cTo={cTo} setCTo={setCTo} label={periodLabel} />
 
       <div className="grid grid-cols-2 gap-2.5 sm:gap-3 md:grid-cols-3 xl:grid-cols-6">
-        <Stat label="شركاء المزرعة" value={partners.length} sub={`رأس المال: ${money(d.capital)}`} icon={Users} />
+        <Stat label="شركاء المزرعة" value={partners.length} sub={`رأس المال ${money(d.capital)} — المتبقي ${money(round2(d.capital - d.capitalUsed))}`} icon={Users} />
         <Stat label={`المصروفات${sfx}`} value={<span className="text-base sm:text-xl">{Object.keys(d.expPeriod).length ? Object.entries(d.expPeriod).map(([c, v]) => money(v, c)).join(' | ') : money(0)}</span>} sub="تشغيلية — بدون سلف الشركاء وسداد القروض" icon={Receipt} tone="red" />
-        <Stat className="col-span-2 md:col-span-1" label="الرصيد النقدي (الحالي)" value={<span className="text-base sm:text-lg">{cashLine}</span>} sub="لكل عملة على حدة" icon={Wallet} tone="amber" />
-        <Stat className="col-span-2 md:col-span-1" label={`إجمالي المبيعات${sfx}`} value={money(d.salesTotal)} sub="الحليب عند التسليم + بيع الحيوانات" icon={ShoppingCart} tone="purple" />
+        <Stat className="col-span-2 md:col-span-1" label="الرصيد النقدي (الحالي)" value={<span className="text-base sm:text-lg">{cashLine}</span>} sub="الفعلي في الصندوق: الوارد − الصادر (لكل عملة)" icon={Wallet} tone="amber" />
+        <Stat className="col-span-2 md:col-span-1" label={`إجمالي المبيعات${sfx}`} value={money(d.salesTotal)} sub="قيمة تسليم الحليب + بيع الحيوانات (ليست النقد المقبوض)" icon={ShoppingCart} tone="purple" />
         <Stat label={isAll ? 'إجمالي إنتاج الحليب' : `إنتاج الحليب${sfx}`} value={`${fmt(d.morning + d.evening)} لتر`} sub={`الصباح ${fmt(d.morning)} · المساء ${fmt(d.evening)}`} icon={Droplets} tone="green" />
         <Stat label="عدد الأبقار النشطة" value={d.herd} icon={PawPrint} tone="blue" />
       </div>

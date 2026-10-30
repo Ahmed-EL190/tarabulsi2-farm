@@ -1,14 +1,14 @@
 import { useMemo, useState } from 'react';
-import { FileText, BookOpen, Info } from 'lucide-react';
+import { FileText, BookOpen, Info, Landmark } from 'lucide-react';
 import CrudPage, { FormModal } from '../components/CrudPage';
 import ExportButtons from '../components/ExportButtons';
 import AnimalSale from '../components/AnimalSale';
 import ExchangeModal from '../components/ExchangeModal';
 import { Card, Stat, Table, Badge, Modal, Empty, PageHeader, Avatar, money, fmt, today } from '../components/ui';
 import { useCol, useSettings, createAnimal, saveRecord, commit, newId } from '../data/db';
-import { recordAnimalEvent, partnerMovement, voidAnimalCascade, voidAnimalEventCascade } from '../data/ops';
+import { recordAnimalEvent, partnerMovement, voidAnimalCascade, voidAnimalEventCascade, animalPurchasePayment, linkPurchasesToCapital, voidCashTransactions } from '../data/ops';
 import { useAuth } from '../data/auth';
-import { customerPosition, customerStatement, partnerLedger, herdState, animalExchange, validateNewAnimal, animalProfile, round2, LEDGER_TYPES } from '../lib/finance';
+import { customerPosition, customerStatement, partnerLedger, herdState, animalExchange, validateNewAnimal, animalProfile, partnerCapital, round2, LEDGER_TYPES } from '../lib/finance';
 import { CURRENCIES, LEDGER_AR, ANIMAL_CATEGORIES } from '../lib/constants';
 const CAT_AR = Object.fromEntries(ANIMAL_CATEGORIES);
 const animalOpt = (r) => `${r.tag}${r.name ? ' - ' + r.name : ''}`;
@@ -85,7 +85,8 @@ export function Customers() {
 // ───────── الشركاء
 function LedgerModal({ partner, onClose }) {
   const { user, can } = useAuth(); const s = useSettings();
-  const entries = useCol('partnerCapitalTransactions').rows;
+  const entries = useCol('partnerCapitalTransactions').rows; const evAll = useCol('animalEvents').rows; const anAll = useCol('animals').rows;
+  const cap = partnerCapital(partner, entries, evAll, anAll); const buys = [...cap.purchases].sort((a, b) => a.date.localeCompare(b.date));
   const [c, setC] = useState('SYP'); const [type, setType] = useState(''); const [from, setFrom] = useState(''); const [to, setTo] = useState(''); const [mv, setMv] = useState(false);
   const L = partnerLedger(partner.id, type ? entries.filter((e) => e.type === type) : entries, { currency: c, from, to });
   const rows = L.rows.map((r) => ({ ...r, typeAr: LEDGER_AR[r.type] }));
@@ -98,6 +99,8 @@ function LedgerModal({ partner, onClose }) {
         <input type="date" className="input w-full sm:w-36" value={from} onChange={(e) => setFrom(e.target.value)} /><input type="date" className="input w-full sm:w-36" value={to} onChange={(e) => setTo(e.target.value)} />
         <ExportButtons report={report} />{can('create') && <button className="btn btn-primary" onClick={() => setMv(true)}>تسجيل حركة</button>}
       </div>
+      <div className="mb-3 grid grid-cols-3 gap-2"><Stat label="رأس المال المودَع" value={<span className="text-base">{fmt(cap.deposited)}</span>} /><Stat label="استُخدم في شراء المواشي" value={<span className="text-base">{fmt(cap.used)}</span>} tone="amber" /><Stat label="المتبقي" value={<span className="text-base">{fmt(cap.remaining)}</span>} tone={cap.remaining < 0 ? 'red' : 'green'} /></div>
+      {buys.length > 0 && <details className="mb-3 rounded-xl border border-slate-100 p-2 text-sm"><summary className="cursor-pointer font-bold">مشتريات المواشي من رأس ماله ({buys.length})</summary><div className="mt-2"><Table rows={buys} columns={[{ key: 'date', label: 'التاريخ' }, { key: 'tag', label: 'الحيوان' }, { key: 'value', label: 'المبلغ', render: (r) => <b className="num">{fmt(r.value)}</b> }]} /></div></details>}
       <Table columns={report.columns.map((x) => ({ ...x, render: x.type === 'money' ? (r) => <span className="num">{fmt(r[x.key])}</span> : undefined }))} rows={rows} empty={<Empty title="لا توجد حركات" />} />
       <div className="mt-3 text-sm font-bold">الرصيد الختامي ({c}): <span className="num">{fmt(L.closing)}</span> <span className="text-xs font-normal text-slate-500">(موجب = مستحق للشريك على المزرعة)</span></div>
       <FormModal open={mv} onClose={() => setMv(false)} title="حركة شريك (مع قيد الصندوق المرتبط)" submitLabel="تسجيل"
@@ -109,33 +112,83 @@ function LedgerModal({ partner, onClose }) {
 export function Partners() {
   const [led, setLed] = useState(null);
   return (<>
-    <CrudPage title="الشركاء" subtitle="الشركاء ونسب الملكية والأرباح — تُخزَّن النسبتان بشكل منفصل" col="partners" searchKeys={['name', 'phone']}
+    <CrudPage title="الشركاء" subtitle="الشركاء ونسب الملكية والأرباح — رأس المال المتبقي = المودَع − مشتريات المواشي المدفوعة من رأس ماله" col="partners" searchKeys={['name', 'phone']}
+      useCtx={() => ({ led: useCol('partnerCapitalTransactions').rows, events: useCol('animalEvents').rows, animals: useCol('animals').rows })}
       fields={[{ name: 'name', label: 'الاسم', type: 'text', required: true }, { name: 'phone', label: 'الهاتف / التواصل', type: 'text' }, { name: 'initialCapital', label: 'رأس المال الابتدائي (ل.س)', type: 'number', min: 0 }, { name: 'ownershipPct', label: 'نسبة الملكية %', type: 'number', min: 0, required: true }, { name: 'profitSharePct', label: 'نسبة الأرباح %', type: 'number', min: 0, required: true }, { name: 'joinDate', label: 'تاريخ الانضمام', type: 'date' }, { name: 'status', label: 'الحالة', type: 'select', options: [['active', 'نشط'], ['inactive', 'غير نشط']], required: true, default: 'active' }, { name: 'notes', label: 'ملاحظات', type: 'textarea' }]}
       create={async (u, d) => { const id = await saveRecord(u, 'partners', d); if (Number(d.initialCapital) > 0) await commit(u, [{ col: 'partnerCapitalTransactions', data: { partnerId: id, date: d.joinDate || today(), type: 'capital_contribution', amount: Number(d.initialCapital), currency: 'SYP', opening: true } }]); }}
-      summary={(rows) => { const o = round2(rows.reduce((a, p) => a + Number(p.ownershipPct || 0), 0)), pr = round2(rows.reduce((a, p) => a + Number(p.profitSharePct || 0), 0));
-        return rows.length ? <div className="grid gap-3 sm:grid-cols-3"><Stat label="مجموع نسب الملكية" value={`${o}%`} tone={o === 100 ? 'green' : 'amber'} /><Stat label="مجموع نسب الأرباح" value={`${pr}%`} sub={pr === 100 ? 'جاهز للتوزيع النسبي' : 'يجب أن يساوي 100% قبل التسوية'} tone={pr === 100 ? 'green' : 'red'} /><Stat label="رأس المال الابتدائي" value={money(rows.reduce((a, p) => a + Number(p.initialCapital || 0), 0))} /></div> : null; }}
-      cols={() => [{ key: 'name', label: 'الشريك' }, { key: 'phone', label: 'التواصل' }, { key: 'initialCapital', label: 'رأس المال', render: (r) => <span className="num">{fmt(r.initialCapital)}</span> }, { key: 'ownershipPct', label: 'الملكية', render: (r) => `${r.ownershipPct}%` }, { key: 'profitSharePct', label: 'الأرباح', render: (r) => `${r.profitSharePct}%` }, { key: 'status', label: 'الحالة', render: (r) => <Badge tone={r.status === 'active' ? 'green' : 'gray'}>{r.status === 'active' ? 'نشط' : 'غير نشط'}</Badge> }]}
+      summary={(rows, ctx) => { const o = round2(rows.reduce((a, p) => a + Number(p.ownershipPct || 0), 0)), pr = round2(rows.reduce((a, p) => a + Number(p.profitSharePct || 0), 0));
+        const caps = rows.map((p) => partnerCapital(p, ctx.led, ctx.events, ctx.animals)); const dep = round2(caps.reduce((a, x) => a + x.deposited, 0)), used = round2(caps.reduce((a, x) => a + x.used, 0));
+        return rows.length ? <div className="grid grid-cols-2 gap-3 sm:grid-cols-4"><Stat label="مجموع نسب الملكية" value={`${o}%`} tone={o === 100 ? 'green' : 'amber'} /><Stat label="مجموع نسب الأرباح" value={`${pr}%`} sub={pr === 100 ? 'جاهز للتوزيع النسبي' : 'يجب أن يساوي 100% قبل التسوية'} tone={pr === 100 ? 'green' : 'red'} />
+          <Stat label="رأس المال المودَع" value={<span className="text-base sm:text-xl">{money(dep)}</span>} /><Stat label="المتبقي من رأس المال" value={<span className="text-base sm:text-xl">{money(round2(dep - used))}</span>} sub={`استُخدم في شراء المواشي: ${money(used)}`} tone={dep - used < 0 ? 'red' : 'green'} /></div> : null; }}
+      cols={(ctx) => [{ key: 'name', label: 'الشريك' }, { key: 'phone', label: 'التواصل' },
+        { key: 'cap', label: 'رأس المال المودَع', render: (r) => <span className="num">{fmt(partnerCapital(r, ctx.led, ctx.events, ctx.animals).deposited)}</span> },
+        { key: 'used', label: 'استُخدم في شراء المواشي', render: (r) => <span className="num">{fmt(partnerCapital(r, ctx.led, ctx.events, ctx.animals).used)}</span> },
+        { key: 'rem', label: 'المتبقي من رأس المال', render: (r) => { const x = partnerCapital(r, ctx.led, ctx.events, ctx.animals); return <b className={`num ${x.remaining < 0 ? 'text-rose-600' : 'text-emerald-700'}`}>{fmt(x.remaining)}</b>; } },
+        { key: 'ownershipPct', label: 'الملكية', render: (r) => `${r.ownershipPct}%` }, { key: 'profitSharePct', label: 'الأرباح', render: (r) => `${r.profitSharePct}%` }, { key: 'status', label: 'الحالة', render: (r) => <Badge tone={r.status === 'active' ? 'green' : 'gray'}>{r.status === 'active' ? 'نشط' : 'غير نشط'}</Badge> }]}
       rowActions={(r) => <button className="rounded p-1.5 hover:bg-slate-100" title="دفتر الشريك" onClick={() => setLed(r)}><BookOpen size={15} /></button>} />
     {led && <LedgerModal partner={led} onClose={() => setLed(null)} />}
   </>);
 }
 
 // ───────── المواشي
-const animalCtx = () => ({ events: useCol('animalEvents').rows, animals: useCol('animals').rows, production: useCol('milkProduction').rows, expenses: useCol('expenses').rows, cash: useCol('cashTransactions').rows });
+const animalCtx = () => ({ events: useCol('animalEvents').rows, animals: useCol('animals').rows, production: useCol('milkProduction').rows, expenses: useCol('expenses').rows, cash: useCol('cashTransactions').rows, ledger: useCol('partnerCapitalTransactions').rows });
+// الشريك الافتراضي لدفع المشتريات: من اسمه «وليد» (أبو وليد)، أو الشريك الوحيد إن وُجد واحد فقط
+const useDefaultPayer = () => { const ps = useCol('partners').rows.filter((p) => !p.voided); return ps.find((p) => /وليد/.test(p.name || ''))?.id || (ps.length === 1 ? ps[0].id : ''); };
+const payShow = (v) => v.origin === 'purchase' || (v.origin === undefined && v.withCalf === 'yes' && Number(v.calfCost) > 0);
 const checkCalf = (d, motherTag, animals) => {
   const c = validateNewAnimal(d.calfTag, animals); if (!c.ok) throw new Error(c.reason === 'duplicate' ? 'رقم الصغير مسجّل مسبقاً' : 'أدخل رقم الصغير');
   if (String(d.calfTag).trim().toLowerCase() === String(motherTag).trim().toLowerCase()) throw new Error('رقم الصغير يجب أن يختلف عن رقم الأم');
 };
 /** تسجيل صغير لأمّ (جديدة أو موجودة): الحيوان + حدث الولادة/الشراء + حركة الصندوق إن كان له سعر. */
-async function addCalf(u, motherId, mother, d, { origin, date, accountId, currency }) {
+async function addCalf(u, motherId, mother, d, { origin, date, currency, pay }) {
   const tag = String(d.calfTag).trim(); const cost = Number(d.calfCost || 0);
   const cid = await createAnimal(u, { tag, name: d.calfName || '', category: d.calfCategory || 'heifer_calf', sex: d.calfSex || 'F', breed: d.calfBreed || mother.breed || '', origin, sellerName: mother.sellerName || '', birthDate: d.calfBirthDate || '', acquisitionDate: date, acquisitionCost: cost, currency, healthStatus: d.calfHealth || 'healthy', motherId, pregnant: 'na', withMother: true, photo: d.calfPhoto || '' });
-  const cashRow = origin === 'purchase' && accountId && cost > 0 ? { date, type: 'animal_purchase', direction: 'out', amount: cost, currency, accountId, animalId: cid, description: `شراء ${tag}` } : null;
-  await recordAnimalEvent(u, { animalId: cid, tag, type: origin, date, value: cost, currency, motherId }, cashRow);
+  const p = origin === 'purchase' ? animalPurchasePayment({ ...pay, cost, date, currency, tag, animalId: cid }) : { cash: null, ledger: null, extra: {} };
+  await recordAnimalEvent(u, { animalId: cid, tag, type: origin, date, value: cost, currency, motherId, ...p.extra }, p.cash, p.ledger);
+}
+/** تدقيق مشتريات الحيوانات: لكل شراء — هل هو من رأس المال؟ هل له حركة في الصندوق؟ ويكشف الشراء المسجّل مرتين (رأس مال + صندوق). */
+function PurchaseAudit({ payer, onClose }) {
+  const { user, can } = useAuth();
+  const animals = useCol('animals').rows.filter((a) => !a.voided); const events = useCol('animalEvents').rows; const cash = useCol('cashTransactions').rows; const ledger = useCol('partnerCapitalTransactions').rows; const partners = useCol('partners').rows.filter((p) => !p.voided);
+  const [pid, setPid] = useState(payer || ''); const [err, setErr] = useState('');
+  const cashFor = (a) => cash.filter((t) => !t.voided && t.type === 'animal_purchase' && (t.animalId === a.id || (!t.animalId && t.description === `شراء ${a.tag}`)));
+  const rows = events.filter((e) => !e.voided && e.type === 'purchase' && Number(e.value) > 0).map((e) => { const a = animals.find((x) => x.id === e.animalId); if (!a) return null;
+    const cs = cashFor(a); const cashAmt = round2(cs.reduce((s, t) => s + Number(t.amount || 0), 0)); const cap = e.paidFrom === 'capital';
+    return { id: e.id, ev: e, a, cs, tag: a.tag, date: e.date, value: Number(e.value), cap, cashAmt, st: cap && cashAmt > 0 ? 'both' : cap ? 'capital' : cashAmt > 0 ? 'cash' : 'none' }; }).filter(Boolean).sort((x, y) => x.date.localeCompare(y.date));
+  const sum = (f) => round2(rows.filter(f).reduce((s, r) => s + r.value, 0));
+  const both = rows.filter((r) => r.st === 'both'); const ST = { both: ['مسجّل مرتين', 'red'], capital: ['من رأس المال', 'green'], cash: ['من الصندوق', 'amber'], none: ['بلا مصدر دفع', 'gray'] };
+  const run = async (fn) => { setErr(''); try { await fn(); } catch (e) { setErr(e.message); } };
+  return (
+    <Modal open onClose={onClose} title="تدقيق مشتريات الحيوانات" wide>
+      <div className="mb-3 grid grid-cols-2 gap-2 sm:grid-cols-4"><Stat label="إجمالي المشتريات" value={<span className="text-base">{fmt(sum(() => true))}</span>} /><Stat label="من رأس المال" value={<span className="text-base">{fmt(sum((r) => r.cap))}</span>} tone="green" /><Stat label="من الصندوق فقط" value={<span className="text-base">{fmt(sum((r) => r.st === 'cash'))}</span>} tone="amber" /><Stat label="مسجّل مرتين" value={<span className="text-base">{fmt(sum((r) => r.st === 'both'))}</span>} tone="red" /></div>
+      {both.length > 0 && <div className="mb-3 rounded-lg bg-red-50 p-3 text-sm font-bold text-red-700">{both.length} عملية شراء مسجّلة من رأس المال <u>ومن الصندوق معاً</u> — لذلك رصيد الصندوق ناقص والمتبقي من رأس المال ناقص بنفس المبلغ. احذف حركة الصندوق المكرّرة.</div>}
+      {err && <div className="mb-2 text-sm font-bold text-red-600">{err}</div>}
+      <div className="mb-3 flex flex-wrap items-end gap-2">
+        {rows.some((r) => !r.cap) && <label className="block"><span className="mb-1 block text-xs font-bold text-slate-500">الشريك (للربط برأس المال)</span><select className="input sm:w-48" value={pid} onChange={(e) => setPid(e.target.value)}><option value="">— اختر —</option>{partners.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}</select></label>}
+        {both.length > 0 && can('voidFinancial') && <button className="btn btn-danger" onClick={() => run(async () => { if (!confirm(`إلغاء ${both.reduce((n, r) => n + r.cs.length, 0)} حركة شراء من الصندوق (الشراء يبقى من رأس المال)؟`)) return; await voidCashTransactions(user, both.flatMap((r) => r.cs), 'شراء مسجّل مرتين: يبقى من رأس المال'); })}>إلغاء كل المكرّر من الصندوق ({both.length})</button>}
+      </div>
+      <Table rows={rows} empty={<Empty title="لا توجد مشتريات حيوانات" />} columns={[{ key: 'date', label: 'التاريخ' }, { key: 'tag', label: 'الحيوان' }, { key: 'value', label: 'السعر', render: (r) => <b className="num">{fmt(r.value)}</b> }, { key: 'cashAmt', label: 'في الصندوق', render: (r) => (r.cashAmt ? <span className="num">{fmt(r.cashAmt)}</span> : '—') },
+        { key: 'st', label: 'المصدر', render: (r) => <Badge tone={ST[r.st][1]}>{ST[r.st][0]}</Badge> },
+        { key: '_a', label: '', render: (r) => <div className="flex flex-wrap gap-1">
+          {r.st === 'both' && can('voidFinancial') && <button className="btn btn-danger !px-2.5 !py-1 text-xs" onClick={() => run(() => voidCashTransactions(user, r.cs, 'شراء مسجّل مرتين: يبقى من رأس المال'))}>احذف من الصندوق</button>}
+          {(r.st === 'cash' || r.st === 'none') && can('update') && <button className="btn btn-ghost !px-2.5 !py-1 text-xs" onClick={() => run(async () => { if (!pid) throw new Error('اختر الشريك أولاً'); await linkPurchasesToCapital(user, [r.a], { events: [r.ev], cash, ledger }, pid); })}>اربطه برأس المال</button>}</div> }]} />
+    </Modal>
+  );
+}
+/** يربط كل مشتريات الحيوانات السابقة برأس مال شريك (فتُخصم من المتبقي من رأس ماله)، ويرفعها من الصندوق لو كانت مسجّلة منه. */
+function LinkCapitalPurchases({ payer }) {
+  const { user, can } = useAuth(); const animals = useCol('animals').rows.filter((a) => !a.voided); const events = useCol('animalEvents').rows; const cash = useCol('cashTransactions').rows; const ledger = useCol('partnerCapitalTransactions').rows; const [open, setOpen] = useState(false);
+  const pending = events.filter((e) => !e.voided && e.type === 'purchase' && Number(e.value) > 0 && e.paidFrom !== 'capital' && animals.some((a) => a.id === e.animalId));
+  if (!pending.length || !can('update')) return null;
+  const total = pending.reduce((a, e) => a + Number(e.value), 0);
+  return (<><button className="btn btn-ghost" onClick={() => setOpen(true)}><Landmark size={16} />ربط المشتريات برأس المال ({pending.length})</button>
+    {open && <FormModal open onClose={() => setOpen(false)} title={`ربط ${pending.length} عملية شراء (${fmt(total)}) برأس مال شريك`} submitLabel="ربط الكل" fields={[{ name: 'partnerId', label: 'الشريك صاحب رأس المال (يُخصم من رصيده)', type: 'rel', col: 'partners', required: true }]} defaults={{ partnerId: payer }}
+      onSubmit={(d) => linkPurchasesToCapital(user, animals, { events, cash, ledger }, d.partnerId)} />}</>);
 }
 export function Animals() {
   const [sale, setSale] = useState(null); // null | true | animalId
   const [view, setView] = useState(null); // صورة مكبّرة
+  const payer = useDefaultPayer(); const [audit, setAudit] = useState(false);
   const calfF = (o) => ({ showIf: (v) => v.withCalf === 'yes', ...o });
   const fields = [
     { name: 'tag', label: 'رقم الحيوان (Tag)', type: 'text', required: true }, { name: 'name', label: 'الاسم', type: 'text' }, { name: 'photo', label: 'صورة الحيوان', type: 'image' },
@@ -144,7 +197,9 @@ export function Animals() {
     { name: 'sellerName', label: 'جهة الشراء (البائع/السوق)', type: 'text', showIf: (v) => v.origin === 'purchase' },
     { name: 'birthDate', label: 'تاريخ الميلاد', type: 'date' }, { name: 'ageAtPurchaseMonths', label: 'العمر عند الشراء (شهر) — إن لم يُعرف تاريخ الميلاد', type: 'number', min: 0 },
     { name: 'acquisitionDate', label: 'تاريخ الشراء / الاقتناء', type: 'date', required: true }, { name: 'acquisitionCost', label: 'سعر الشراء', type: 'number', min: 0 }, cur,
-    { ...acct, label: 'ممول الشراء من (الصندوق)', showIf: (v) => v.origin === 'purchase' },
+    { name: 'payFrom', label: 'مصدر دفع ثمن الشراء', type: 'select', options: [['capital', 'من رأس مال شريك (بدون أي علاقة بالصندوق)'], ['account', 'من صندوق المزرعة']], default: 'capital', showIf: payShow },
+    { name: 'payPartnerId', label: 'الشريك صاحب رأس المال', type: 'rel', col: 'partners', showIf: (v) => payShow(v) && (v.payFrom || 'capital') === 'capital' },
+    { ...acct, label: 'الصندوق الذي دُفع منه', showIf: (v) => payShow(v) && v.payFrom === 'account' },
     { name: 'milkAtPurchase', label: 'كمية الحليب التي تعطيها عند الشراء (لتر/يوم)', type: 'number', min: 0, showIf: (v) => v.sex === 'F' },
     { name: 'pregnant', label: 'حامل عند الشراء؟', type: 'select', options: [['na', 'لا ينطبق'], ['no', 'لا'], ['yes', 'نعم']], showIf: (v) => v.sex === 'F' },
     { name: 'daysToBirth', label: 'عدد الأيام المتبقية على الولادة (من تاريخ الشراء)', type: 'number', min: 0, showIf: (v) => v.sex === 'F' && v.pregnant === 'yes' },
@@ -155,28 +210,32 @@ export function Animals() {
     calfF({ name: 'calfCategory', label: 'فئة الصغير', type: 'select', options: ANIMAL_CATEGORIES, default: 'heifer_calf' }), calfF({ name: 'calfSex', label: 'جنس الصغير', type: 'select', options: [['F', 'أنثى'], ['M', 'ذكر']], default: 'F' }),
     calfF({ name: 'calfBreed', label: 'سلالة الصغير (فارغ = سلالة الأم)', type: 'text' }), calfF({ name: 'calfBirthDate', label: 'تاريخ ولادة الصغير', type: 'date' }),
     calfF({ name: 'calfCost', label: 'سعر الصغير (0 أو فارغ إن كان ضمن سعر الأم)', type: 'number', min: 0 }), calfF({ name: 'calfHealth', label: 'الحالة الصحية للصغير', type: 'select', options: [['healthy', 'سليم'], ['sick', 'مريض']], default: 'healthy' }), calfF({ name: 'calfPhoto', label: 'صورة الصغير', type: 'image' }),
-    calfF({ ...acct, name: 'calfAccountId', label: 'الصندوق الذي دُفع منه سعر الصغير (اختياري)', showIf: (v) => v.withCalf === 'yes' && Number(v.calfCost) > 0 && v.origin === undefined }),
     { name: 'notes', label: 'ملاحظات', type: 'textarea' }];
   return (<>
     <CrudPage title="المواشي والعجول" subtitle="رقم الحيوان فريد. اضغط أيقونة التفاصيل لعرض بيانات الحيوان وبيعه" col="animals" searchKeys={['tag', 'name', 'breed']} useCtx={animalCtx}
-      extraHeader={<button className="btn btn-ghost" onClick={() => setSale(true)}>بيع حيوان</button>}
-      fields={fields} createOnlyFields={['origin', 'accountId']} onVoid={(u, r, ctx, why) => voidAnimalCascade(u, r, ctx, why)}
+      extraHeader={<><LinkCapitalPurchases payer={payer} /><button className="btn btn-ghost" onClick={() => setAudit(true)}>تدقيق المشتريات</button><button className="btn btn-ghost" onClick={() => setSale(true)}>بيع حيوان</button></>}
+      fields={fields} defaults={{ payFrom: 'capital', payPartnerId: payer }} createOnlyFields={['origin']} onVoid={(u, r, ctx, why) => voidAnimalCascade(u, r, ctx, why)}
       create={async (u, d, { animals }) => {
         const ok = validateNewAnimal(d.tag, animals); if (!ok.ok) throw new Error(ok.reason === 'duplicate' ? 'رقم الحيوان مسجّل مسبقاً' : 'رقم الحيوان مطلوب');
         const calf = d.withCalf === 'yes'; if (calf) checkCalf(d, d.tag, animals);
-        const { origin, accountId, withCalf, calfTag, calfName, calfCategory, calfSex, calfBreed, calfBirthDate, calfCost, calfHealth, calfPhoto, calfAccountId, ...rest } = d;
+        const { origin, accountId, payFrom, payPartnerId, withCalf, calfTag, calfName, calfCategory, calfSex, calfBreed, calfBirthDate, calfCost, calfHealth, calfPhoto, ...rest } = d;
+        const pay = { from: payFrom || 'capital', partnerId: payPartnerId, accountId };
+        if (origin === 'purchase') { animalPurchasePayment({ ...pay, cost: d.acquisitionCost, date: d.acquisitionDate, currency: d.currency, tag: d.tag }); if (calf) animalPurchasePayment({ ...pay, cost: calfCost, date: d.acquisitionDate, currency: d.currency, tag: calfTag }); } // تحقّق قبل الحفظ
         const id = await createAnimal(u, { ...rest, origin, pregnant: d.sex === 'F' ? d.pregnant || 'na' : 'na', healthStatus: d.healthStatus || 'healthy' });
-        const buy = (cost, tag, aid) => (origin === 'purchase' && accountId && Number(cost) > 0 ? { date: d.acquisitionDate, type: 'animal_purchase', direction: 'out', amount: Number(cost), currency: d.currency, accountId, animalId: aid, description: `شراء ${tag}` } : null);
-        await recordAnimalEvent(u, { animalId: id, tag: d.tag, type: origin, date: d.acquisitionDate, value: d.acquisitionCost || 0, currency: d.currency }, buy(d.acquisitionCost, d.tag, id));
-        if (calf) await addCalf(u, id, { ...rest, id }, d, { origin, date: d.acquisitionDate, accountId, currency: d.currency });
+        const mp = origin === 'purchase' ? animalPurchasePayment({ ...pay, cost: d.acquisitionCost, date: d.acquisitionDate, currency: d.currency, tag: d.tag, animalId: id }) : { cash: null, ledger: null, extra: {} };
+        await recordAnimalEvent(u, { animalId: id, tag: d.tag, type: origin, date: d.acquisitionDate, value: d.acquisitionCost || 0, currency: d.currency, ...mp.extra }, mp.cash, mp.ledger);
+        if (calf) await addCalf(u, id, { ...rest, id }, d, { origin, date: d.acquisitionDate, currency: d.currency, pay });
       }}
       update={async (u, d, edit, { animals }) => {
-        const { withCalf, calfTag, calfName, calfCategory, calfSex, calfBreed, calfBirthDate, calfCost, calfHealth, calfPhoto, calfAccountId, ...rest } = d;
+        const { withCalf, calfTag, calfName, calfCategory, calfSex, calfBreed, calfBirthDate, calfCost, calfHealth, calfPhoto, payFrom, payPartnerId, accountId, ...rest } = d;
         if (String(rest.tag || '').trim().toLowerCase() !== String(edit.tag).trim().toLowerCase()) { const ok = validateNewAnimal(rest.tag, animals.filter((a) => a.id !== edit.id)); if (!ok.ok) throw new Error(ok.reason === 'duplicate' ? 'رقم الحيوان مسجّل مسبقاً' : 'رقم الحيوان مطلوب'); }
         const calf = withCalf === 'yes'; if (calf) checkCalf(d, rest.tag, animals);
+        const cost = Number(calfCost || 0); const cdate = calfBirthDate || today(); const cur2 = edit.currency || d.currency || 'SYP';
+        const pay = { from: payFrom || 'capital', partnerId: payPartnerId, accountId };
+        if (calf && cost > 0) animalPurchasePayment({ ...pay, cost, date: cdate, currency: cur2, tag: calfTag }); // تحقّق قبل الحفظ
         await saveRecord(u, 'animals', rest, edit.id);
         // إضافة صغير لحيوان موجود: مولود بالمزرعة (أو مشترى لو أدخلت له سعراً)
-        if (calf) { const cost = Number(calfCost || 0); await addCalf(u, edit.id, { ...edit, ...rest }, d, { origin: cost > 0 ? 'purchase' : 'birth', date: calfBirthDate || today(), accountId: calfAccountId, currency: edit.currency || d.currency || 'SYP' }); }
+        if (calf) await addCalf(u, edit.id, { ...edit, ...rest }, d, { origin: cost > 0 ? 'purchase' : 'birth', date: cdate, currency: cur2, pay });
       }}
       summary={(rows, ctx) => { const h = herdState(ctx.events, ctx.animals); const soon = rows.filter((r) => h[r.id]?.active && (animalProfile(r, ctx).daysToCalving ?? 999) <= 30 && animalProfile(r, ctx).daysToCalving !== null).length;
         return <div className="grid grid-cols-2 gap-3 sm:grid-cols-5"><Stat label="القطيع النشط" value={Object.values(h).filter((x) => x.active).length} /><Stat label="مريض" value={rows.filter((r) => h[r.id]?.active && r.healthStatus === 'sick').length} tone="red" /><Stat label="ولادات خلال 30 يوم" value={soon} tone="amber" /><Stat label="إجمالي السجلات" value={rows.length} /><Stat label="خرجت من القطيع" value={Object.values(h).filter((x) => !x.active).length} /></div>; }}
@@ -187,6 +246,7 @@ export function Animals() {
         { key: 'calv', label: 'الولادة', render: (r) => { const dd = animalProfile(r, ctx).daysToCalving; return dd === null ? '—' : <Badge tone={dd < 0 ? 'red' : dd <= 30 ? 'amber' : 'blue'}>{dd >= 0 ? `بعد ${dd} يوم` : `متأخرة ${-dd} يوم`}</Badge>; } },
         { key: 'st', label: 'الحالة', render: (r) => { const s = h[r.id]; const t = s?.active ? (r.healthStatus === 'sick' ? 'مريض' : 'نشط') : s ? { sale: 'مباع', death: 'نافق', transfer_out: 'منقول', exchange_out: 'مبادَل' }[s.last] || 'خرج' : 'بلا حدث'; return <Badge tone={t === 'نشط' ? 'green' : t === 'مريض' ? 'red' : s ? 'gray' : 'amber'}>{t}</Badge>; } }]; }}
       rowActions={(r) => <button className="rounded p-1.5 hover:bg-slate-100" title="تفاصيل وبيع" onClick={() => setSale(r.id)}><Info size={15} /></button>} />
+    {audit && <PurchaseAudit payer={payer} onClose={() => setAudit(false)} />}
     {sale && <AnimalSale preselectId={sale === true ? null : sale} onClose={() => setSale(null)} />}
     {view && <Modal open onClose={() => setView(null)} title={`${view.tag} ${view.name || ''}`}><img src={view.photo} alt={view.tag} className="mx-auto max-h-[70dvh] w-full rounded-xl object-contain" /></Modal>}
   </>);
@@ -195,20 +255,25 @@ const evTypes = [['birth', 'ولادة'], ['purchase', 'شراء'], ['death', '�
 const EVT_AR = { birth: 'ولادة', purchase: 'شراء', death: 'نفوق', sale: 'بيع', opening: 'افتتاحي', exchange_in: 'تبادل (وارد)', exchange_out: 'تبادل (صادر)', transfer_out: 'نقل' };
 const animalLabel = (r) => `${r.tag}${r.name ? ' - ' + r.name : ''}`;
 export function AnimalEvents() {
-  const [sale, setSale] = useState(false);
-  return (<><CrudPage extraHeader={<button className="btn btn-ghost" onClick={() => setSale(true)}>بيع حيوان</button>} title="المواليد والوفيات والمشتريات" subtitle="كل حدث يحدّث القطيع النشط ويُنشئ القيد المالي المرتبط" col="animalEvents" noEdit useCtx={animalCtx} searchKeys={['tag', 'type']} onVoid={(u, r, ctx, why) => voidAnimalEventCascade(u, r, ctx, why)} filter={(r) => !String(r.type).startsWith('exchange') && r.type !== 'transfer_out' && r.type !== 'opening'}
+  const [sale, setSale] = useState(false); const payer = useDefaultPayer();
+  return (<><CrudPage extraHeader={<button className="btn btn-ghost" onClick={() => setSale(true)}>بيع حيوان</button>} title="المواليد والوفيات والمشتريات" subtitle="كل حدث يحدّث القطيع النشط ويُنشئ القيد المالي المرتبط" col="animalEvents" noEdit useCtx={animalCtx} defaults={{ payFrom: 'capital', payPartnerId: payer }} searchKeys={['tag', 'type']} onVoid={(u, r, ctx, why) => voidAnimalEventCascade(u, r, ctx, why)} filter={(r) => !String(r.type).startsWith('exchange') && r.type !== 'transfer_out' && r.type !== 'opening'}
     fields={[{ name: 'type', label: 'نوع الحدث', type: 'select', options: evTypes, required: true, default: 'birth' }, { name: 'date', label: 'التاريخ', type: 'date', required: true },
       { name: 'animalId', label: 'الحيوان (للنفوق/البيع)', type: 'rel', col: 'animals', optLabel: animalLabel }, { name: 'newTag', label: 'رقم الحيوان الجديد (للولادة/الشراء)', type: 'text' }, { name: 'newName', label: 'الاسم', type: 'text' }, { name: 'breed', label: 'السلالة', type: 'text' }, { name: 'sex', label: 'الجنس', type: 'select', options: [['F', 'أنثى'], ['M', 'ذكر']] }, { name: 'motherId', label: 'الأم (للولادة)', type: 'rel', col: 'animals', optLabel: animalLabel }, { name: 'fatherId', label: 'الأب (للولادة)', type: 'rel', col: 'animals', optLabel: animalLabel },
-      { name: 'value', label: 'القيمة (شراء/بيع)', type: 'number', min: 0 }, cur, { ...acct }, { name: 'notes', label: 'ملاحظات', type: 'textarea' }]}
+      { name: 'value', label: 'القيمة (شراء/بيع)', type: 'number', min: 0 }, cur,
+      { name: 'payFrom', label: 'مصدر دفع ثمن الشراء', type: 'select', options: [['capital', 'من رأس مال شريك (بدون أي علاقة بالصندوق)'], ['account', 'من صندوق المزرعة']], default: 'capital', showIf: (v) => v.type === 'purchase' },
+      { name: 'payPartnerId', label: 'الشريك صاحب رأس المال', type: 'rel', col: 'partners', showIf: (v) => v.type === 'purchase' && (v.payFrom || 'capital') === 'capital' },
+      { ...acct, showIf: (v) => v.type === 'sale' || (v.type === 'purchase' && v.payFrom === 'account') }, { name: 'notes', label: 'ملاحظات', type: 'textarea' }]}
     create={async (u, d, { animals, events }) => {
+      const v0 = Number(d.value || 0); if (d.type === 'sale' && v0 > 0 && !d.accountId) throw new Error('اختر الصندوق لتسجيل الحركة النقدية');
+      if (d.type === 'purchase') animalPurchasePayment({ from: d.payFrom || 'capital', partnerId: d.payPartnerId, accountId: d.accountId, cost: v0, date: d.date, currency: d.currency, tag: d.newTag }); // تحقّق قبل الحفظ
       const h = herdState(events, animals); let animalId = d.animalId, tag = animals.find((a) => a.id === animalId)?.tag;
       if (d.type === 'birth' || d.type === 'purchase') {
         const ok = validateNewAnimal(d.newTag, animals); if (!ok.ok) throw new Error(ok.reason === 'duplicate' ? 'رقم الحيوان مسجّل مسبقاً' : 'أدخل رقم الحيوان الجديد');
         animalId = await createAnimal(u, { tag: d.newTag, name: d.newName || '', breed: d.breed || '', sex: d.sex || 'F', acquisitionDate: d.date, acquisitionCost: d.type === 'purchase' ? Number(d.value || 0) : 0, currency: d.currency, motherId: d.motherId || '', fatherId: d.fatherId || '', category: d.type === 'birth' ? 'heifer_calf' : 'cow', origin: d.type === 'birth' ? 'birth' : 'purchase', healthStatus: 'healthy', birthDate: d.type === 'birth' ? d.date : '' }); tag = d.newTag;
       } else { if (!animalId) throw new Error('اختر الحيوان'); if (!h[animalId]?.active) throw new Error('هذا الحيوان غير موجود ضمن القطيع النشط'); }
-      const v = Number(d.value || 0); if ((d.type === 'sale' || d.type === 'purchase') && v > 0 && !d.accountId) throw new Error('اختر الصندوق لتسجيل الحركة النقدية');
-      const cash = v > 0 && d.type === 'purchase' ? { date: d.date, type: 'animal_purchase', direction: 'out', amount: v, currency: d.currency, accountId: d.accountId, animalId, description: `شراء ${tag}` } : v > 0 && d.type === 'sale' ? { date: d.date, type: 'animal_sale', direction: 'in', amount: v, currency: d.currency, accountId: d.accountId, description: `بيع ${tag}` } : null;
-      await recordAnimalEvent(u, { animalId, tag, type: d.type, date: d.date, value: v, currency: d.currency, motherId: d.motherId || '', notes: d.notes || '' }, cash); }}
+      const v = v0; const pp = d.type === 'purchase' ? animalPurchasePayment({ from: d.payFrom || 'capital', partnerId: d.payPartnerId, accountId: d.accountId, cost: v, date: d.date, currency: d.currency, tag, animalId }) : { cash: null, ledger: null, extra: {} };
+      const cash = pp.cash || (v > 0 && d.type === 'sale' ? { date: d.date, type: 'animal_sale', direction: 'in', amount: v, currency: d.currency, accountId: d.accountId, animalId, description: `بيع ${tag}` } : null);
+      await recordAnimalEvent(u, { animalId, tag, type: d.type, date: d.date, value: v, currency: d.currency, motherId: d.motherId || '', notes: d.notes || '', ...pp.extra }, cash, pp.ledger); }}
     cols={() => [{ key: 'date', label: 'التاريخ' }, { key: 'type', label: 'الحدث', render: (r) => <Badge tone={r.type === 'death' ? 'red' : r.type === 'birth' ? 'green' : 'blue'}>{EVT_AR[r.type]}</Badge> }, { key: 'tag', label: 'الحيوان' }, { key: 'value', label: 'القيمة', render: (r) => (r.value ? <span className="num">{fmt(r.value)} {r.currency}</span> : '—') }, { key: 'notes', label: 'ملاحظات' }]} />
     {sale && <AnimalSale onClose={() => setSale(false)} />}</>);
 }

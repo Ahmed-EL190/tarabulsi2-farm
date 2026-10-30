@@ -150,6 +150,18 @@ export function partnerLedger(partnerId, entries, { currency, from, to } = {}) {
   return { rows, totals, closing: bal };
 }
 
+/** رأس مال الشريك: المودَع − المستخدم في شراء المواشي (المشتريات التي سُجّلت «من رأس مال الشريك» ولا علاقة لها بالصندوق).
+ *  قيود الدفتر المرتبطة بحيوان (animalId) هي أثر تحويلات قديمة فلا تُحسب مودَعاً. */
+export function partnerCapital(partner, ledger = [], events = [], animals = [], currency = 'SYP') {
+  const gone = new Set(animals.filter((a) => a.voided).map((a) => a.id));
+  const mine = ledger.filter((e) => e.partnerId === partner.id && !e.voided && !e.animalId && (e.currency || 'SYP') === currency && ['capital_contribution', 'additional_capital'].includes(e.type));
+  const initialInLedger = mine.some((e) => e.opening);
+  const deposited = round2(mine.reduce((s, e) => s + n(e.amount), 0) + (!initialInLedger && currency === 'SYP' ? n(partner.initialCapital) : 0));
+  const purchases = events.filter((e) => !e.voided && e.type === 'purchase' && e.paidFrom === 'capital' && e.capitalPartnerId === partner.id && (e.currency || 'SYP') === currency && !gone.has(e.animalId));
+  const used = round2(purchases.reduce((s, e) => s + n(e.value), 0));
+  return { deposited, used, remaining: round2(deposited - used), purchases };
+}
+
 /** Partner-funded expense: the expense is recorded ONCE; the ledger gets a linked entry (no second expense). */
 export function partnerFundedExpenseEntry(expense, payment) {
   return { partnerId: payment.partnerId, date: payment.date, type: 'expense_paid_personally', amount: payment.amount,
