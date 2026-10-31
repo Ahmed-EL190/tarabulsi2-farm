@@ -10,7 +10,7 @@ export const NAV = [
   ['/', 'الرئيسية', Home], ['/production', 'إنتاج الحليب', Milk], ['/milk-sales', 'مبيعات الحليب', ShoppingCart],
   ['/customers', 'العملاء والديون المدينة', Users], ['/cash', 'الصندوق والحسابات', Landmark], ['/expenses', 'المصروفات', Receipt],
   ['/partners', 'الشركاء', UserRoundCog], ['/loans', 'قروض وتمويل الشركاء', HandCoins], ['/settlements', 'تسويات وتوزيع الأرباح', Scale],
-  ['/animals', 'المواشي والعجول', PawPrint], ['/animal-events', 'المواليد والوفيات والمشتريات', Baby], ['/exchange', 'تبادل ونقل المواشي', ArrowLeftRight],
+  ['/animals', 'المواشي والعجول', PawPrint], ['/animal-events', 'المواليد والوفيات', Baby], ['/exchange', 'تبادل ونقل المواشي', ArrowLeftRight],
   ['/inventory', 'الأعلاف والمخزون', Wheat], ['/reports', 'التقارير', FileText], ['/users', 'المستخدمون والصلاحيات', ShieldCheck],
   ['/settings', 'الإعدادات', Settings], ['/audit', 'سجل التدقيق', History],
 ];

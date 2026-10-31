@@ -73,25 +73,6 @@ function Detail({ ag, pos, deliveries, payments, onClose }) {
 }
 
 
-function AllSales() {
-  const dls = useCol('milkDeliveries').rows, ags = useCol('milkSales').rows, evs = useCol('animalEvents').rows, txs = useCol('cashTransactions').rows, custs = useCol('customers').rows;
-  const [kind, setKind] = useState(''); const [from, setFrom] = useState(''); const [to, setTo] = useState('');
-  const all = useMemo(() => salesLedger({ deliveries: dls, agreements: ags, animalEvents: evs, cashTransactions: txs, customers: custs }, { from, to }), [dls, ags, evs, txs, custs, from, to]);
-  const rows = all.filter((r) => !kind || r.kind === kind); const t = salesTotals(rows);
-  const show = (o) => (Object.keys(o).length ? Object.entries(o).map(([c, v]) => money(v, c)).join(' | ') : money(0));
-  return (<>
-    <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
-      <Stat label="إجمالي المبيعات" value={<span className="text-lg">{show(t.total)}</span>} tone="green" />
-      <Stat label="مبيعات الحليب" value={<span className="text-lg">{show(t.byKind.milk)}</span>} tone="blue" />
-      <Stat label="مبيعات الحيوانات" value={<span className="text-lg">{show(t.byKind.animal)}</span>} tone="amber" />
-      <Stat label="إيرادات أخرى" value={<span className="text-lg">{show(t.byKind.other)}</span>} tone="purple" />
-    </div>
-    <Card><div className="mb-3 grid grid-cols-1 gap-2 sm:flex sm:flex-wrap"><select className="input w-full sm:w-40" value={kind} onChange={(e) => setKind(e.target.value)}><option value="">كل الأنواع</option>{Object.entries(SALE_KIND_AR).map(([k, l]) => <option key={k} value={k}>{l}</option>)}</select><input type="date" className="input w-full sm:w-40" value={from} onChange={(e) => setFrom(e.target.value)} /><input type="date" className="input w-full sm:w-40" value={to} onChange={(e) => setTo(e.target.value)} /></div>
-      <Table rows={rows} empty={<Empty title="لا توجد مبيعات" hint="تظهر هنا مبيعات الحليب (عند التسليم) وبيع الحيوانات والإيرادات الأخرى." />}
-        columns={[{ key: 'date', label: 'التاريخ' }, { key: 'kind', label: 'النوع', render: (r) => <Badge tone={r.kind === 'milk' ? 'blue' : r.kind === 'animal' ? 'amber' : 'gray'}>{SALE_KIND_AR[r.kind]}</Badge> }, { key: 'ref', label: 'المرجع' }, { key: 'party', label: 'العميل / المشتري' }, { key: 'description', label: 'البيان' }, { key: 'qty', label: 'الكمية', render: (r) => (r.qty ? <span className="num">{fmt(r.qty)} {r.kind === 'milk' ? 'لتر' : 'رأس'}</span> : '—') }, { key: 'pl', label: 'سعر اللتر', render: (r) => (r.kind === 'milk' && r.qty ? <span className="num">{fmt(r.amount / r.qty)}</span> : '—') }, { key: 'amount', label: 'المبلغ', render: (r) => <b className="num">{money(r.amount, r.currency)}</b> }]} /></Card>
-  </>);
-}
-
 export default function MilkSales() {
   const { user, can } = useAuth();
   const ags = useCol('milkSales').rows.filter((a) => !a.voided); const dls = useCol('milkDeliveries').rows; const pays = useCol('customerPayments').rows;
@@ -116,8 +97,6 @@ export default function MilkSales() {
       <PageHeader title="مبيعات الحليب" subtitle="اتفاقيات البيع، التسليمات، الدفعات المقدمة والمؤجلة — الإيراد يُحتسب عند التسليم">
         {can('create') && <><button className="btn btn-ghost" onClick={() => setQuick(true)}><Zap size={16} />بيع فوري</button><button className="btn btn-primary" onClick={() => setOpen(true)}><Plus size={16} />اتفاقية جديدة</button></>}
       </PageHeader>
-      <div className="mb-3 flex flex-wrap gap-2 [&>.btn]:flex-1 sm:[&>.btn]:flex-none">{[['ag', 'اتفاقيات الحليب'], ['all', 'كل المبيعات (حليب + حيوانات + أخرى)']].map(([k, l]) => <button key={k} className={`btn ${tab === k ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setTab(k)}>{l}</button>)}</div>
-      {tab === 'all' && <AllSales />}
       {tab === 'ag' && (<>
       <div className="mb-4 grid gap-3 sm:grid-cols-3">
         <Stat label="قيمة المسلّم (إيراد معترف به)" value={<span className="text-lg">{show(sumByCurrency(rows, (r) => r.pos.deliveredValue))}</span>} tone="purple" />

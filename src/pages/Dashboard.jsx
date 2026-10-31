@@ -5,7 +5,7 @@ import { ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip, CartesianG
 import { Card, Stat, Empty, Table, Badge, fmt, money, today } from '../components/ui';
 import { useCol, useSettings } from '../data/db';
 import { catLabel } from '../lib/constants';
-import { herdState, cashBalances, sumByCurrency, partnerLedger, operatingExpenses, round2 } from '../lib/finance';
+import { herdState, cashBalances, sumByCurrency, partnerLedger, operatingExpenses, salesLedger, salesTotals, round2 } from '../lib/finance';
 
 const COLORS = ['#2f7bd9', '#8b6fd6', '#f2a23a', '#4caf6a', '#ef5b5b', '#14b8a6'];
 
@@ -64,23 +64,23 @@ export default function Dashboard() {
     const monthly = daysBetween(spanFrom, spanTo) > 45;
     const keys = []; if (monthly) { let y = +spanFrom.slice(0, 4), m = +spanFrom.slice(5, 7); const ey = +spanTo.slice(0, 4), em = +spanTo.slice(5, 7); while (y < ey || (y === ey && m <= em)) { keys.push(`${y}-${String(m).padStart(2, '0')}`); m++; if (m > 12) { m = 1; y++; } } } else { for (let i = 0; i < daysBetween(spanFrom, spanTo); i++) keys.push(addDays(spanFrom, i)); }
     const kOf = (date) => (monthly ? date.slice(0, 7) : date);
-    const tm = Object.fromEntries(keys.map((k) => [k, { day: monthly ? k : k.slice(5), morning: 0, evening: 0 }]));
-    prod.forEach((p) => { const b = tm[kOf(p.date)]; if (b && (p.shift === 'morning' || p.shift === 'evening')) b[p.shift] += Number(p.liters) || 0; });
+    const tm = Object.fromEntries(keys.map((k) => [k, { day: monthly ? k : k.slice(5), morning: 0, evening: 0, all: 0 }]));
+    prod.forEach((p) => { const b = tm[kOf(p.date)]; if (b && ['morning', 'evening', 'all'].includes(p.shift)) b[p.shift] += Number(p.liters) || 0; });
     const trend = keys.map((k) => tm[k]);
 
     const priceOf = (x) => Number(x.pricePerLiter ?? ags.find((a) => a.id === x.agreementId)?.pricePerLiter ?? 0);
     const live = dls.filter((x) => !x.voided && inR(x.date));
-    const byCust = {}; live.forEach((x) => { const c = custs.find((c) => c.id === x.customerId)?.name || '—'; byCust[c] = (byCust[c] || 0) + Number(x.qty) * priceOf(x); });
-    const sales = Object.entries(byCust).map(([name, value]) => ({ name, value: round2(value) })).sort((a, b) => b.value - a.value).slice(0, 5);
-    const milkSales = round2(live.filter((x) => (x.currency || 'SYP') === 'SYP').reduce((a, x) => a + Number(x.qty) * priceOf(x), 0));
-    const animalSales = round2(events.filter((e) => e.type === 'sale' && !e.voided && !animalsAll.find((a) => a.id === e.animalId)?.voided && inR(e.date) && (e.currency || 'SYP') === 'SYP').reduce((a, e) => a + Number(e.value || 0), 0));
-    const salesTotal = round2(milkSales + animalSales);
+    // المبيعات كلها: حليب + حيوانات + إيرادات أخرى (نفس تعريف تقرير المبيعات)
+    const slRows = salesLedger({ deliveries: dls, agreements: ags, animalEvents: events.filter((e) => !animalsAll.find((a) => a.id === e.animalId)?.voided), cashTransactions: cash, customers: custs }, { from: from || undefined, to: to || undefined, currency: 'SYP' });
+    const stt = salesTotals(slRows); const salesMilk = round2(stt.byKind.milk.SYP || 0), salesAnimal = round2(stt.byKind.animal.SYP || 0), salesOther = round2(stt.byKind.other.SYP || 0); const salesTotal = round2(stt.total.SYP || 0);
+    const byCust = {}; slRows.filter((r) => r.kind === 'milk').forEach((r) => { const c = r.party || '—'; byCust[c] = (byCust[c] || 0) + r.amount; });
+    const sales = [...Object.entries(byCust).map(([name, value]) => ({ name: `حليب: ${name}`, value: round2(value) })).sort((a, b) => b.value - a.value).slice(0, 4), ...(salesAnimal > 0 ? [{ name: 'بيع حيوانات', value: salesAnimal }] : []), ...(salesOther > 0 ? [{ name: 'إيرادات أخرى', value: salesOther }] : [])];
     const cat = {}; operatingExpenses(exps, { currency: 'SYP', from: from || undefined, to: to || undefined }).forEach((e) => { cat[e.category] = (cat[e.category] || 0) + Number(e.amount); });
     const expCat = Object.entries(cat).map(([k, v]) => ({ name: catLabel(k), value: v }));
     const bal = cashBalances(cash);
     const byCur = {}; Object.entries(bal).forEach(([k, v]) => { const c = k.split('|')[1]; byCur[c] = round2((byCur[c] || 0) + v); });
     const sh = (n) => prod.filter((p) => p.shift === n).reduce((a, p) => a + Number(p.liters || 0), 0);
-    return { trend, monthly, sales, salesTotal, expCat, bal: byCur, morning: sh('morning'), evening: sh('evening'),
+    return { trend, monthly, sales, salesTotal, salesMilk, salesAnimal, salesOther, expCat, bal: byCur, morning: sh('morning'), evening: sh('evening'), allday: sh('all'),
       expPeriod: sumByCurrency(operatingExpenses(exps, { from: from || undefined, to: to || undefined }), (e) => e.amount),
       herd: Object.values(herdState(events, animalsAll)).filter((x) => x.active).length,
       pBal: partners.map((p) => ({ ...p, bal: partnerLedger(p.id, ledger, { currency: 'SYP' }).closing })),
@@ -89,7 +89,7 @@ export default function Dashboard() {
       recent: [...cash].filter((c) => !c.voided && inR(c.date)).sort((a, b) => b.date.localeCompare(a.date)).slice(0, 5) };
   }, [prodAll, ags, dls, custs, exps, cash, partners, ledger, events, animalsAll, t, from, to]); // eslint-disable-line
   const cashLine = Object.keys(d.bal).length ? Object.entries(d.bal).map(([c, v]) => money(v, c)).join('  |  ') : money(0);
-  const hasProd = d.trend.some((x) => x.morning || x.evening);
+  const hasProd = d.trend.some((x) => x.morning || x.evening || x.all);
   const long = new Date().toLocaleDateString('ar-SY', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
   const quick = [['/milk-sales', 'تسجيل مبيعات الحليب', ShoppingCart], ['/expenses', 'إضافة مصروف', Receipt], ['/partners', 'تسجيل شريك جديد', UserPlus], ['/animals', 'إضافة حيوان', PawPrint], ['/reports', 'عرض التقارير', FileText]];
   const sfx = isAll ? '' : ` (${preset === 'today' ? 'اليوم' : 'الفترة'})`;
@@ -108,8 +108,8 @@ export default function Dashboard() {
         <Stat label="شركاء المزرعة" value={partners.length} sub={`رأس المال ${money(d.capital)} — المتبقي ${money(round2(d.capital - d.capitalUsed))}`} icon={Users} />
         <Stat label={`المصروفات${sfx}`} value={<span className="text-base sm:text-xl">{Object.keys(d.expPeriod).length ? Object.entries(d.expPeriod).map(([c, v]) => money(v, c)).join(' | ') : money(0)}</span>} sub="تشغيلية — بدون سلف الشركاء وسداد القروض" icon={Receipt} tone="red" />
         <Stat className="col-span-2 md:col-span-1" label="الرصيد النقدي (الحالي)" value={<span className="text-base sm:text-lg">{cashLine}</span>} sub="الفعلي في الصندوق: الوارد − الصادر (لكل عملة)" icon={Wallet} tone="amber" />
-        <Stat className="col-span-2 md:col-span-1" label={`إجمالي المبيعات${sfx}`} value={money(d.salesTotal)} sub="قيمة تسليم الحليب + بيع الحيوانات (ليست النقد المقبوض)" icon={ShoppingCart} tone="purple" />
-        <Stat label={isAll ? 'إجمالي إنتاج الحليب' : `إنتاج الحليب${sfx}`} value={`${fmt(d.morning + d.evening)} لتر`} sub={`الصباح ${fmt(d.morning)} · المساء ${fmt(d.evening)}`} icon={Droplets} tone="green" />
+        <Stat className="col-span-2 md:col-span-1" label={`إجمالي المبيعات${sfx}`} value={money(d.salesTotal)} sub={`حليب ${fmt(d.salesMilk)} + حيوانات ${fmt(d.salesAnimal)}${d.salesOther ? ` + أخرى ${fmt(d.salesOther)}` : ''} (قيمة وليست النقد المقبوض)`} icon={ShoppingCart} tone="purple" />
+        <Stat label={isAll ? 'إجمالي إنتاج الحليب' : `إنتاج الحليب${sfx}`} value={`${fmt(d.morning + d.evening + d.allday)} لتر`} sub={`الصباح ${fmt(d.morning)} · المساء ${fmt(d.evening)}${d.allday ? ` · على مدار اليوم ${fmt(d.allday)}` : ''}`} icon={Droplets} tone="green" />
         <Stat label="عدد الأبقار النشطة" value={d.herd} icon={PawPrint} tone="blue" />
       </div>
 
@@ -117,9 +117,9 @@ export default function Dashboard() {
         <Card title={`إنتاج الحليب (${isAll ? 'كل الأيام' : periodLabel})${d.monthly ? ' — شهرياً' : ''}`} icon={Milk}>
           {!hasProd ? <Empty title="لا يوجد إنتاج مسجّل" hint={isAll ? 'سجّل أول إنتاج ليظهر الرسم البياني.' : 'لا يوجد إنتاج في هذه الفترة.'}><Link className="btn btn-primary" to="/production"><Plus size={14} />تسجيل إنتاج</Link></Empty> :
             <div className="h-52 sm:h-60" dir="ltr"><ResponsiveContainer><AreaChart data={d.trend} margin={{ left: -18, right: 6, top: 4 }}><CartesianGrid strokeDasharray="3 3" vertical={false} /><XAxis dataKey="day" tick={{ fontSize: 11 }} interval="preserveStartEnd" minTickGap={18} /><YAxis tick={{ fontSize: 11 }} width={44} /><Tooltip /><Legend />
-              <Area dataKey="morning" name="الصباح" stroke="#2f7bd9" fill="#2f7bd933" /><Area dataKey="evening" name="المساء" stroke="#4caf6a" fill="#4caf6a33" /></AreaChart></ResponsiveContainer></div>}
+              <Area dataKey="morning" name="الصباح" stroke="#2f7bd9" fill="#2f7bd933" /><Area dataKey="evening" name="المساء" stroke="#4caf6a" fill="#4caf6a33" /><Area dataKey="all" name="على مدار اليوم" stroke="#f2a23a" fill="#f2a23a33" /></AreaChart></ResponsiveContainer></div>}
         </Card>
-        <Card title="توزيع المبيعات حسب العملاء">
+        <Card title="توزيع المبيعات (حليب + حيوانات + أخرى)">
           {!d.sales.length ? <Empty title="لا توجد عمليات تسليم" hint={isAll ? 'ستظهر المبيعات بعد تسجيل أول تسليم.' : 'لا توجد تسليمات في هذه الفترة.'} /> :
             <div className="h-56 sm:h-60" dir="ltr"><ResponsiveContainer><PieChart><Pie data={d.sales} dataKey="value" nameKey="name" innerRadius={45} outerRadius={72}>{d.sales.map((_, i) => <Cell key={i} fill={COLORS[i % 6]} />)}</Pie><Tooltip /><Legend wrapperStyle={{ fontSize: 12 }} /></PieChart></ResponsiveContainer></div>}
         </Card>

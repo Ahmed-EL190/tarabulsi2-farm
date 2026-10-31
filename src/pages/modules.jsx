@@ -17,15 +17,21 @@ const cur = { name: 'currency', label: 'العملة', type: 'select', options: 
 const acct = { name: 'accountId', label: 'الصندوق / الحساب', type: 'rel', col: 'cashAccounts' };
 
 // ───────── إنتاج الحليب
+const SHIFTS = [['morning', 'صباحاً'], ['evening', 'مساءً'], ['all', 'على مدار اليوم (إجمالي)']];
+const SHIFT_TONE = { morning: 'amber', evening: 'blue', all: 'green' };
 export function Production() {
-  return <CrudPage title="إنتاج الحليب" subtitle="تسجيل الإنتاج اليومي حسب الوردية" col="milkProduction" searchKeys={['date', 'group', 'notes']}
-    fields={[{ name: 'date', label: 'التاريخ', type: 'date', required: true }, { name: 'shift', label: 'الوردية', type: 'select', required: true, options: [['morning', 'صباحاً'], ['evening', 'مساءً']], default: 'morning' },
+  // لا نخلط «صباح/مساء» مع «إجمالي اليوم» في نفس اليوم كي لا يتكرر الإنتاج
+  const check = (d, prod, selfId) => { const same = prod.filter((p) => !p.voided && p.date === d.date && p.id !== selfId); if (same.some((p) => (p.shift === 'all') !== (d.shift === 'all'))) throw new Error('هذا اليوم مسجّل فيه إنتاج بنظام مختلف: إمّا «صباحاً/مساءً» أو «على مدار اليوم». لا تخلط الاثنين في نفس اليوم حتى لا يتكرر الإنتاج.'); };
+  return <CrudPage title="إنتاج الحليب" subtitle="3 اختيارات: صباحاً · مساءً · على مدار اليوم (إجمالي اليوم دفعة واحدة)" col="milkProduction" searchKeys={['date', 'group', 'notes']}
+    filters={[{ key: 'shift', label: 'الوردية', options: SHIFTS, allLabel: 'الكل' }]}
+    fields={[{ name: 'date', label: 'التاريخ', type: 'date', required: true }, { name: 'shift', label: 'الوردية', type: 'select', required: true, options: SHIFTS, default: 'morning' },
       { name: 'animalId', label: 'البقرة (اختياري — لإنتاج كل بقرة)', type: 'rel', col: 'animals', optLabel: animalOpt }, { name: 'group', label: 'المجموعة (إن لم تُحدَّد بقرة)', type: 'text' }, { name: 'liters', label: 'الكمية (لتر)', type: 'number', required: true, positive: true }, { name: 'notes', label: 'ملاحظات', type: 'textarea' }]}
-    useCtx={() => ({ animals: useCol('animals').rows })}
-    create={(u, d, { animals }) => saveRecord(u, 'milkProduction', { ...d, animalTag: animals.find((a) => a.id === d.animalId)?.tag || '', recordedBy: u.name || u.email })}
-    summary={(rows) => { const sum = (f) => rows.filter(f).reduce((a, r) => a + Number(r.liters), 0); const m = today().slice(0, 7);
-      return <div className="grid grid-cols-2 gap-3 sm:grid-cols-4"><Stat label="إنتاج اليوم" value={`${fmt(sum((r) => r.date === today()))} لتر`} /><Stat label="صباحاً اليوم" value={fmt(sum((r) => r.date === today() && r.shift === 'morning'))} /><Stat label="مساءً اليوم" value={fmt(sum((r) => r.date === today() && r.shift === 'evening'))} /><Stat label="إنتاج الشهر" value={`${fmt(sum((r) => r.date.startsWith(m)))} لتر`} /></div>; }}
-    cols={() => [{ key: 'date', label: 'التاريخ' }, { key: 'shift', label: 'الوردية', render: (r) => <Badge tone={r.shift === 'morning' ? 'amber' : 'blue'}>{r.shift === 'morning' ? 'صباحاً' : 'مساءً'}</Badge> }, { key: 'group', label: 'البقرة/المجموعة', render: (r) => r.animalTag || r.group || '—' }, { key: 'liters', label: 'اللترات', render: (r) => <b className="num">{fmt(r.liters)}</b> }, { key: 'recordedBy', label: 'سجّله' }, { key: 'notes', label: 'ملاحظات' }]} />;
+    useCtx={() => ({ animals: useCol('animals').rows, prod: useCol('milkProduction').rows })}
+    create={(u, d, { animals, prod }) => { check(d, prod); return saveRecord(u, 'milkProduction', { ...d, animalTag: animals.find((a) => a.id === d.animalId)?.tag || '', recordedBy: u.name || u.email }); }}
+    update={(u, d, edit, { animals, prod }) => { check(d, prod, edit.id); return saveRecord(u, 'milkProduction', { ...d, animalTag: animals.find((a) => a.id === d.animalId)?.tag || '' }, edit.id); }}
+    summary={(rows) => { const sum = (f) => rows.filter(f).reduce((a, r) => a + Number(r.liters), 0); const m = today().slice(0, 7); const td = (r) => r.date === today();
+      return <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-5"><Stat label="إنتاج اليوم (الإجمالي)" value={`${fmt(sum(td))} لتر`} tone="green" /><Stat label="صباحاً اليوم" value={fmt(sum((r) => td(r) && r.shift === 'morning'))} tone="amber" /><Stat label="مساءً اليوم" value={fmt(sum((r) => td(r) && r.shift === 'evening'))} tone="blue" /><Stat label="على مدار اليوم" value={fmt(sum((r) => td(r) && r.shift === 'all'))} /><Stat label="إنتاج الشهر" value={`${fmt(sum((r) => r.date.startsWith(m)))} لتر`} /></div>; }}
+    cols={() => [{ key: 'date', label: 'التاريخ' }, { key: 'shift', label: 'الوردية', render: (r) => <Badge tone={SHIFT_TONE[r.shift] || 'gray'}>{(SHIFTS.find(([k]) => k === r.shift) || [])[1] || r.shift}</Badge> }, { key: 'group', label: 'البقرة/المجموعة', render: (r) => r.animalTag || r.group || '—' }, { key: 'liters', label: 'اللترات', render: (r) => <b className="num">{fmt(r.liters)}</b> }, { key: 'recordedBy', label: 'سجّله' }, { key: 'notes', label: 'ملاحظات' }]} />;
 }
 
 // ───────── العملاء
@@ -251,12 +257,12 @@ export function Animals() {
     {view && <Modal open onClose={() => setView(null)} title={`${view.tag} ${view.name || ''}`}><img src={view.photo} alt={view.tag} className="mx-auto max-h-[70dvh] w-full rounded-xl object-contain" /></Modal>}
   </>);
 }
-const evTypes = [['birth', 'ولادة'], ['purchase', 'شراء'], ['death', 'نفوق']]; // sale = dedicated dialog (search by name/tag)
+const evTypes = [['birth', 'ولادة'], ['death', 'نفوق']]; // الشراء والبيع من صفحة «المواشي والعجول» فقط (مكان واحد لتفادي التكرار)
 const EVT_AR = { birth: 'ولادة', purchase: 'شراء', death: 'نفوق', sale: 'بيع', opening: 'افتتاحي', exchange_in: 'تبادل (وارد)', exchange_out: 'تبادل (صادر)', transfer_out: 'نقل' };
 const animalLabel = (r) => `${r.tag}${r.name ? ' - ' + r.name : ''}`;
 export function AnimalEvents() {
   const [sale, setSale] = useState(false); const payer = useDefaultPayer();
-  return (<><CrudPage extraHeader={<button className="btn btn-ghost" onClick={() => setSale(true)}>بيع حيوان</button>} title="المواليد والوفيات والمشتريات" subtitle="كل حدث يحدّث القطيع النشط ويُنشئ القيد المالي المرتبط" col="animalEvents" noEdit useCtx={animalCtx} defaults={{ payFrom: 'capital', payPartnerId: payer }} searchKeys={['tag', 'type']} onVoid={(u, r, ctx, why) => voidAnimalEventCascade(u, r, ctx, why)} filter={(r) => !String(r.type).startsWith('exchange') && r.type !== 'transfer_out' && r.type !== 'opening'}
+  return (<><CrudPage title="المواليد والوفيات" subtitle="تسجيل ولادة ونفوق فقط. للشراء والبيع استخدم «المواشي والعجول» — والجدول هنا يعرض سجل كل الأحداث للاطلاع" col="animalEvents" noEdit useCtx={animalCtx} defaults={{ payFrom: 'capital', payPartnerId: payer }} searchKeys={['tag', 'type']} onVoid={(u, r, ctx, why) => voidAnimalEventCascade(u, r, ctx, why)} filter={(r) => !String(r.type).startsWith('exchange') && r.type !== 'transfer_out' && r.type !== 'opening'}
     fields={[{ name: 'type', label: 'نوع الحدث', type: 'select', options: evTypes, required: true, default: 'birth' }, { name: 'date', label: 'التاريخ', type: 'date', required: true },
       { name: 'animalId', label: 'الحيوان (للنفوق/البيع)', type: 'rel', col: 'animals', optLabel: animalLabel }, { name: 'newTag', label: 'رقم الحيوان الجديد (للولادة/الشراء)', type: 'text' }, { name: 'newName', label: 'الاسم', type: 'text' }, { name: 'breed', label: 'السلالة', type: 'text' }, { name: 'sex', label: 'الجنس', type: 'select', options: [['F', 'أنثى'], ['M', 'ذكر']] }, { name: 'motherId', label: 'الأم (للولادة)', type: 'rel', col: 'animals', optLabel: animalLabel }, { name: 'fatherId', label: 'الأب (للولادة)', type: 'rel', col: 'animals', optLabel: animalLabel },
       { name: 'value', label: 'القيمة (شراء/بيع)', type: 'number', min: 0 }, cur,
