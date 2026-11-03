@@ -5,10 +5,12 @@ import { doc, setDoc, serverTimestamp } from 'firebase/firestore';
 import { Card, Table, Badge, Empty, PageHeader, Toast, Field } from '../components/ui';
 import { FormModal } from '../components/CrudPage';
 import { db, firebaseOptions } from '../lib/firebase';
-import { useCol, useAudit, useSettings, saveRecord } from '../data/db';
+import { useCol, useAudit, useSettings, useCustomLists, saveRecord } from '../data/db';
+import { addCustomCategory, saveCustomCategories } from '../data/ops';
 import { useAuth } from '../data/auth';
 import { ROLES } from '../lib/permissions';
-import { CURRENCIES } from '../lib/constants';
+import { CURRENCIES, EXPENSE_CATEGORIES, ANIMAL_CATEGORIES } from '../lib/constants';
+import { Pencil, Trash2 } from 'lucide-react';
 
 const ROLE_AR = { admin: 'مدير', accountant: 'محاسب', data_entry: 'مدخل بيانات', viewer: 'مشاهد' };
 
@@ -35,11 +37,44 @@ export function Users() {
   );
 }
 
+/** قسم لإدارة فئات قائمة واحدة: عرض الأساسية، وإضافة/إعادة تسمية/حذف الفئات المخصّصة. */
+function CatSection({ kind, title, hint, base, custom, usedCount, user, canEdit }) {
+  const [label, setLabel] = useState(''); const [err, setErr] = useState(''); const [busy, setBusy] = useState(false);
+  const run = async (fn) => { setErr(''); setBusy(true); try { await fn(); } catch (e) { setErr(e.message); } setBusy(false); };
+  return (
+    <div className="rounded-xl border border-slate-100 p-3">
+      <div className="mb-1 text-sm font-extrabold text-slate-800">{title}</div>
+      <div className="mb-2 text-xs text-slate-500">{hint}</div>
+      <div className="mb-3 flex flex-wrap gap-1.5">{base.map(([k, l]) => <span key={k} className="rounded-full bg-slate-100 px-2.5 py-1 text-xs text-slate-600">{l}</span>)}</div>
+      {custom.length > 0 && <ul className="mb-3 divide-y divide-slate-100 rounded-lg border border-slate-100">{custom.map((c) => (
+        <li key={c.id} className="flex items-center justify-between gap-2 px-3 py-2 text-sm"><span className="min-w-0 break-words font-bold">{c.label}<span className="mr-2 text-xs font-normal text-slate-400">({usedCount(c.id)} سجل)</span></span>
+          {canEdit && <span className="flex shrink-0 gap-1">
+            <button className="rounded p-1.5 hover:bg-slate-100" title="إعادة تسمية" onClick={() => { const n = prompt('الاسم الجديد للفئة', c.label); if (n && n.trim() && n.trim() !== c.label) run(() => saveCustomCategories(user, kind, custom.map((x) => (x.id === c.id ? { ...x, label: n.trim() } : x)))); }}><Pencil size={15} /></button>
+            <button className="rounded p-1.5 text-rose-600 hover:bg-rose-50" title="حذف" onClick={() => run(async () => { const n = usedCount(c.id); if (n > 0) throw new Error(`لا يمكن حذف «${c.label}»: مستخدمة في ${n} سجل. غيّر فئة هذه السجلات أولاً.`); if (confirm(`حذف الفئة «${c.label}»؟`)) await saveCustomCategories(user, kind, custom.filter((x) => x.id !== c.id)); })}><Trash2 size={15} /></button></span>}
+        </li>))}</ul>}
+      {canEdit && <div className="flex gap-2"><input className="input" placeholder="اسم فئة جديدة" value={label} onChange={(e) => setLabel(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') e.preventDefault(); }} />
+        <button className="btn btn-primary shrink-0" disabled={busy || !label.trim()} onClick={() => run(async () => { await addCustomCategory(user, kind, label, custom); setLabel(''); })}>إضافة</button></div>}
+      {err && <div className="mt-2 text-sm font-bold text-red-600">{err}</div>}
+    </div>
+  );
+}
+function ListsManager() {
+  const { user, can } = useAuth(); const lists = useCustomLists(); const exps = useCol('expenses').rows.filter((e) => !e.voided); const animals = useCol('animals').rows.filter((x) => !x.voided);
+  return (
+    <Card title="إدارة القوائم (فئات إضافية)" className="mt-4">
+      <p className="mb-3 text-xs text-slate-500">أضف فئات جديدة تظهر مباشرة في القوائم المنسدلة. يمكنك أيضاً إضافتها من نفس الفورم بالاختيار «➕ فئة جديدة…».</p>
+      <div className="grid gap-3 lg:grid-cols-2">
+        <CatSection kind="expense" title="فئات المصروفات" hint="الفئات المضافة تُحتسب كمصروف تشغيلي في الأرباح." base={EXPENSE_CATEGORIES} custom={lists.expense} usedCount={(id) => exps.filter((e) => e.category === id).length} user={user} canEdit={can('create')} />
+        <CatSection kind="animal" title="فئات الحيوانات" hint="تظهر عند إضافة/تعديل الحيوان وفي التقارير." base={ANIMAL_CATEGORIES} custom={lists.animal} usedCount={(id) => animals.filter((x) => x.category === id).length} user={user} canEdit={can('create')} />
+      </div>
+    </Card>
+  );
+}
 export function Settings() {
   const { user, can } = useAuth(); const s = useSettings(); const [f, setF] = useState(null); const [ok, setOk] = useState('');
   const v = f || s; const set = (k, x) => setF({ ...v, [k]: x });
   const rates = v.rates || {};
-  const save = async () => { await saveRecord(user, 'settings', { farmName: v.farmName, baseCurrency: v.baseCurrency, animalPurchaseAsExpense: !!v.animalPurchaseAsExpense, rates, updatedBy: user.uid }, 'main'); setOk('تم الحفظ'); };
+  const save = async () => { await saveRecord(user, 'settings', { farmName: v.farmName, baseCurrency: v.baseCurrency, rates, updatedBy: user.uid }, 'main'); setOk('تم الحفظ'); };
   return (
     <div>
       <PageHeader title="الإعدادات" />
@@ -49,11 +84,12 @@ export function Settings() {
           <Field label="اسم المزرعة"><input className="input" value={v.farmName} onChange={(e) => set('farmName', e.target.value)} /></Field>
           <Field label="العملة الأساسية"><select className="input" value={v.baseCurrency} onChange={(e) => set('baseCurrency', e.target.value)}>{CURRENCIES.map(([c, l]) => <option key={c} value={c}>{l}</option>)}</select></Field>
           <Field label="سعر الصرف USD → SYP (للتحويل الصريح فقط — لا تُجمع العملات تلقائياً)"><input className="input" type="number" dir="ltr" value={rates['USD->SYP'] || ''} onChange={(e) => set('rates', { ...rates, 'USD->SYP': Number(e.target.value) })} /></Field>
-          <label className="flex items-start gap-2 text-sm font-bold sm:items-center sm:pt-6"><input type="checkbox" checked={!!v.animalPurchaseAsExpense} onChange={(e) => set('animalPurchaseAsExpense', e.target.checked)} />احتساب شراء الحيوانات كمصروف وبيعها كإيراد كامل (كما في ملف Excel الأصلي). عند إلغاء التفعيل: يُحتسب ربح/خسارة البيع فقط</label>
+          <div className="rounded-lg bg-slate-50 p-3 text-xs leading-relaxed text-slate-600 sm:col-span-2"><b>سياسة صافي الربح:</b> المبيعات كلها (حليب + بيع حيوانات بسعر البيع كاملاً + إيرادات أخرى) − كل المصروفات التشغيلية. <b>شراء الحيوانات لا يدخل في الأرباح.</b></div>
         </div>
         {can('manageUsers') ? <button className="btn btn-primary mt-4" onClick={save}>حفظ</button> : <p className="mt-3 text-sm text-slate-500">التعديل لمدير النظام فقط.</p>}
       </Card>
       <Card title="الأرصدة الافتتاحية" className="mt-4"><ul className="list-disc space-y-1 pr-5 text-sm text-slate-600"><li>الصناديق: عند إنشاء الحساب أدخل رصيده الافتتاحي (يُسجَّل كحركة «رصيد افتتاحي» لا تُحتسب إيراداً).</li><li>العملاء: حقل «رصيد افتتاحي مدين» في بطاقة العميل.</li><li>الشركاء: رأس المال الابتدائي عند إنشاء الشريك، أو حركة «رصيد افتتاحي» في دفتره.</li><li>المواشي: أضف الحيوان بمصدر «رصيد افتتاحي».</li></ul></Card>
+      <ListsManager />
     </div>
   );
 }

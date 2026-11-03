@@ -2,6 +2,7 @@ import { createContext, useContext, useEffect, useState } from 'react';
 import { onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut } from 'firebase/auth';
 import { doc, onSnapshot, writeBatch, serverTimestamp } from 'firebase/firestore';
 import { auth, db } from '../lib/firebase';
+import { resetStore } from './db';
 import { can } from '../lib/permissions';
 
 const Ctx = createContext(null);
@@ -10,7 +11,7 @@ export const useAuth = () => useContext(Ctx);
 export function AuthProvider({ children }) {
   const [fbUser, setFbUser] = useState(undefined);
   const [profile, setProfile] = useState(undefined);
-  useEffect(() => onAuthStateChanged(auth, (u) => { setFbUser(u); if (!u) setProfile(null); }), []);
+  useEffect(() => onAuthStateChanged(auth, (u) => { resetStore(); setFbUser(u); if (!u) setProfile(null); }), []);
   useEffect(() => {
     if (!fbUser) return;
     return onSnapshot(doc(db, 'users', fbUser.uid), (s) => setProfile(s.exists() ? s.data() : null), () => setProfile(null));

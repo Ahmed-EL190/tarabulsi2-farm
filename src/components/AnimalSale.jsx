@@ -1,17 +1,17 @@
 import { useMemo, useState } from 'react';
 import { Modal, Toast, Field, Avatar, fmt, today } from './ui';
 import AnimalPicker from './AnimalPicker';
-import { useCol } from '../data/db';
+import { useCol, useCustomLists } from '../data/db';
 import { sellAnimal } from '../data/ops';
 import { useAuth } from '../data/auth';
 import { herdState, animalProfile, round2 } from '../lib/finance';
-import { CURRENCIES, ANIMAL_CATEGORIES } from '../lib/constants';
+import { CURRENCIES, animalCatLabel } from '../lib/constants';
 
-const CAT = Object.fromEntries(ANIMAL_CATEGORIES);
 const SRC = { purchase: 'شراء', birth: 'مولود بالمزرعة', opening: 'رصيد افتتاحي' };
 
 /** Pick an animal by tag/name -> details -> sell. Cash goes to the same cashbox as milk payments. */
 export default function AnimalSale({ onClose, preselectId = null }) {
+  useCustomLists();
   const { user, can } = useAuth();
   const animals = useCol('animals').rows.filter((a) => !a.voided);
   const events = useCol('animalEvents').rows; const production = useCol('milkProduction').rows; const expenses = useCol('expenses').rows;
@@ -37,7 +37,7 @@ export default function AnimalSale({ onClose, preselectId = null }) {
   const status = !animal ? '' : herd[animal.id]?.active ? (animal.healthStatus === 'sick' ? 'مريض' : 'نشط') : ({ sale: 'مباع', death: 'نافق', transfer_out: 'منقول', exchange_out: 'مبادَل' }[herd[animal.id]?.last] || 'خارج القطيع');
   const calving = prof?.daysToCalving == null ? '' : prof.daysToCalving >= 0 ? `بعد ${prof.daysToCalving} يوم (${prof.expectedBirthDate})` : `متأخرة ${-prof.daysToCalving} يوم`;
   const details = animal ? [
-    ['الرقم', animal.tag], ['الاسم', animal.name], ['الفئة', CAT[animal.category]], ['الجنس', animal.sex === 'F' ? 'أنثى' : animal.sex === 'M' ? 'ذكر' : ''], ['السلالة', animal.breed],
+    ['الرقم', animal.tag], ['الاسم', animal.name], ['الفئة', animalCatLabel(animal.category)], ['الجنس', animal.sex === 'F' ? 'أنثى' : animal.sex === 'M' ? 'ذكر' : ''], ['السلالة', animal.breed],
     ['المصدر', SRC[animal.origin]], ['جهة الشراء', animal.sellerName], ['تاريخ الشراء', animal.acquisitionDate], ['سعر الشراء', animal.acquisitionCost ? `${fmt(animal.acquisitionCost)} ${animal.currency || ''}` : ''],
     ['العمر (شهر)', prof.ageMonths], ['الحمل', { yes: 'حامل', no: 'غير حامل', na: 'لا ينطبق' }[animal.pregnant]], ['موعد الولادة', calving], ['حليب عند الشراء (لتر/يوم)', animal.milkAtPurchase], ['الحالة', status],
     ['إجمالي الحليب (لتر)', fmt(prof.milkTotal)], ['أيام الإنتاج', prof.milkDays], ['متوسط اليوم (لتر)', fmt(prof.milkAvg)], ['تكلفة العلاج', fmt(prof.treatmentCost)],

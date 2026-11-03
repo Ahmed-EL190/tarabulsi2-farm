@@ -1,5 +1,7 @@
 // Multi-record financial operations. Each is ONE atomic batch so related records can never get out of sync.
 import { serverTimestamp } from 'firebase/firestore';
+import { allExpenseCategories, allAnimalCategories } from '../lib/constants';
+import { planPartnerRepayment, allocateToLoans, loanPosition, partnerDebt, cashBalances } from '../lib/finance';
 import { commit, nextNumber, newId } from './db';
 import { validateDelivery, validateExpensePayment, partnerFundedExpenseEntry, makeTransfer, allocateProfit } from '../lib/finance';
 
@@ -83,10 +85,13 @@ export async function finalizeSettlement(user, s, partners, existing = []) {
     ...alloc.map((a) => ({ col: 'partnerCapitalTransactions', data: { partnerId: a.partnerId, date: s.to, type: 'profit_allocation', amount: a.amount, currency: s.currency, settlementId: id } })),
   ]);
 }
-export const recordAnimalEvent = (user, ev, cash, ledger) => commit(user, [{ col: 'animalEvents', data: ev }, ...(cash ? [{ col: 'cashTransactions', data: cash }] : []), ...(ledger ? [{ col: 'partnerCapitalTransactions', data: ledger }] : [])]);
+export function recordAnimalEvent(user, ev, cash, ledger) {
+  const evId = newId('animalEvents');
+  return commit(user, [{ col: 'animalEvents', id: evId, data: ev }, ...(cash ? [{ col: 'cashTransactions', data: cash }] : []), ...(ledger ? [{ col: 'partnerCapitalTransactions', data: { ...ledger, eventId: evId } }] : [])]);
+}
 
 /** كيف دُفع ثمن شراء الحيوان؟
- *  capital (الافتراضي): من رأس مال شريك — يُخصم من المتبقي من رأس ماله ولا علاقة له بالصندوق إطلاقاً (لا حركة نقدية ولا قيد في دفتر الشريك).
+ *  partner (الافتراضي): دفعه شريك من ماله ← يُسجَّل في حسابه «ثمن حيوان دفعه الشريك» (مستحق له، يزيد تلقائياً مع كل شراء) ولا تتحرك نقود الصندوق.
  *  account: خرج من صندوق المزرعة ← حركة صندوق «شراء حيوان». */
 export function animalPurchasePayment({ from, partnerId, accountId, cost, date, currency, tag, animalId }) {
   const amount = Number(cost || 0); if (!(amount > 0)) return { cash: null, ledger: null, extra: {} };
@@ -94,8 +99,8 @@ export function animalPurchasePayment({ from, partnerId, accountId, cost, date, 
     if (!accountId) throw new Error('اختر الصندوق الذي دُفع منه ثمن الشراء');
     return { cash: { date, type: 'animal_purchase', direction: 'out', amount, currency, accountId, animalId, description: `شراء ${tag}` }, ledger: null, extra: {} };
   }
-  if (!partnerId) throw new Error('اختر الشريك صاحب رأس المال الذي دُفع منه');
-  return { cash: null, ledger: null, extra: { paidFrom: 'capital', capitalPartnerId: partnerId } };
+  if (!partnerId) throw new Error('اختر الشريك الذي دفع ثمن الشراء');
+  return { cash: null, ledger: { partnerId, date, type: 'animal_purchase_paid', amount, currency, animalId, note: `شراء ${tag}` }, extra: { paidFrom: 'partner', payerPartnerId: partnerId } };
 }
 
 /** Animal sale: sale event + cash receipt into the chosen cashbox, one atomic batch (same cashbox as milk payments). */
@@ -219,17 +224,20 @@ export async function voidAnimalCascade(user, animal, { events = [], cash = [], 
   const ops = [{ col: 'animals', id: animal.id, merge: true, data: voidData(reason), action: 'void' }];
   evs.forEach((e) => ops.push({ col: 'animalEvents', id: e.id, merge: true, data: voidData(reason), action: 'void' }));
   animalCash(cash, animal.id, animal.tag, evs).forEach((t) => ops.push({ col: 'cashTransactions', id: t.id, merge: true, data: voidData(reason), action: 'void' }));
-  ledger.filter((e) => e.animalId === animal.id && e.type === 'capital_contribution' && !e.voided).forEach((e) => ops.push({ col: 'partnerCapitalTransactions', id: e.id, merge: true, data: voidData(reason), action: 'void' }));
+  ledger.filter((e) => e.animalId === animal.id && ['capital_contribution', 'animal_purchase_paid'].includes(e.type) && !e.voided).forEach((e) => ops.push({ col: 'partnerCapitalTransactions', id: e.id, merge: true, data: voidData(reason), action: 'void' }));
   return commit(user, ops, 'void');
 }
 /** إلغاء حدث (بيع/شراء/نفوق...) مع حركة الصندوق المرتبطة به. */
 export async function voidAnimalEventCascade(user, ev, { cash = [], ledger = [] } = {}, reason) {
-  const ops = [{ col: 'animalEvents', id: ev.id, merge: true, data: voidData(reason), action: 'void' }];
+  const ops = [{ col: 'animalEvents', id: ev.id, merge: true, data: voidData(reason), action: 'void' }]; const seen = new Set();
+  const v = (col, id) => { if (!seen.has(col + id)) { seen.add(col + id); ops.push({ col, id, merge: true, data: voidData(reason), action: 'void' }); } };
   const want = ev.type === 'sale' ? 'animal_sale' : ev.type === 'purchase' ? 'animal_purchase' : null;
-  if (want) animalCash(cash.filter((t) => t.type === want), ev.animalId, ev.tag, [ev]).filter((t) => t.date === ev.date && Number(t.amount) === Number(ev.value)).slice(0, 1)
-    .forEach((t) => ops.push({ col: 'cashTransactions', id: t.id, merge: true, data: voidData(reason), action: 'void' }));
-  if (ev.type === 'purchase') ledger.filter((e) => e.animalId === ev.animalId && e.type === 'capital_contribution' && !e.voided && e.date === ev.date && Number(e.amount) === Number(ev.value)).slice(0, 1)
-    .forEach((e) => ops.push({ col: 'partnerCapitalTransactions', id: e.id, merge: true, data: voidData(reason), action: 'void' }));
+  if (want) animalCash(cash.filter((t) => t.type === want), ev.animalId, ev.tag, [ev]).filter((t) => t.date === ev.date && Number(t.amount) === Number(ev.value)).slice(0, 1).forEach((t) => v('cashTransactions', t.id));
+  // ثمن شراء دفعه شريك: قيده في حسابه يُلغى مع الحدث
+  ledger.filter((e) => !e.voided && e.type === 'animal_purchase_paid' && (e.eventId === ev.id || (!e.eventId && e.animalId === ev.animalId && e.date === ev.date && Number(e.amount) === Number(ev.value)))).slice(0, 1).forEach((e) => v('partnerCapitalTransactions', e.id));
+  if (ev.type === 'purchase') ledger.filter((e) => e.animalId === ev.animalId && e.type === 'capital_contribution' && !e.voided && e.date === ev.date && Number(e.amount) === Number(ev.value)).slice(0, 1).forEach((e) => v('partnerCapitalTransactions', e.id));
+  // تبادل: فرق نقدي/قيد شريك مرتبط بنفس التبادل
+  if (ev.exchangeId) { cash.filter((t) => !t.voided && t.exchangeId === ev.exchangeId).forEach((t) => v('cashTransactions', t.id)); ledger.filter((e) => !e.voided && e.exchangeId === ev.exchangeId).forEach((e) => v('partnerCapitalTransactions', e.id)); }
   return commit(user, ops, 'void');
 }
 /** إلغاء تسوية معتمدة (فقط لو لا توجد توزيعات نقدية مرتبطة بها). */
@@ -247,26 +255,100 @@ export async function voidDistribution(user, entry, cash = [], reason) {
   return commit(user, ops, 'void');
 }
 
-/** ربط مشتريات الحيوانات المسجّلة بـ«رأس مال شريك»: تُلغى حركة الصندوق الخاصة بالشراء (إن وُجدت) وأي قيد رأس مال إضافي قديم، ويُعلَّم الشراء أنه من رأس مال الشريك. */
-export async function linkPurchasesToCapital(user, animals, { events = [], cash = [], ledger = [] } = {}, partnerId) {
-  if (!partnerId) throw new Error('اختر الشريك');
+/** ربط مشتريات الحيوانات المسجّلة بحساب شريك: يُقيَّد ثمن كل حيوان في حسابه (مستحق له)، وتُلغى حركة الصندوق الخاصة بالشراء (إن وُجدت) وأي قيد رأس مال قديم.
+ *  الشراء الذي كان «من رأس مال» يُنقل إلى حساب نفس الشريك الذي اختير له. */
+export async function linkPurchasesToPartner(user, animals, { events = [], cash = [], ledger = [] } = {}, partnerId) {
   const byId = Object.fromEntries(animals.filter((a) => !a.voided).map((a) => [a.id, a]));
-  const evs = events.filter((e) => !e.voided && e.type === 'purchase' && Number(e.value) > 0 && byId[e.animalId] && e.paidFrom !== 'capital');
-  if (!evs.length) throw new Error('لا توجد مشتريات حيوانات غير مرتبطة برأس المال');
+  const evs = events.filter((e) => !e.voided && e.type === 'purchase' && Number(e.value) > 0 && byId[e.animalId] && e.paidFrom !== 'partner');
+  if (!evs.length) throw new Error('لا توجد مشتريات حيوانات غير مرتبطة بحساب شريك');
   const ops = []; const done = new Set();
-  const voidOnce = (col, id) => { if (done.has(col + id)) return; done.add(col + id); ops.push({ col, id, merge: true, data: voidData('الشراء من رأس مال شريك'), action: 'void' }); };
+  const voidOnce = (col, id) => { if (done.has(col + id)) return; done.add(col + id); ops.push({ col, id, merge: true, data: voidData('نُقل الشراء إلى حساب شريك'), action: 'void' }); };
   for (const ev of evs) {
-    ops.push({ col: 'animalEvents', id: ev.id, merge: true, data: { paidFrom: 'capital', capitalPartnerId: partnerId } });
+    const pid = ev.paidFrom === 'capital' && ev.capitalPartnerId ? ev.capitalPartnerId : partnerId;
+    if (!pid) throw new Error('اختر الشريك');
+    ops.push({ col: 'animalEvents', id: ev.id, merge: true, data: { paidFrom: 'partner', payerPartnerId: pid } });
     animalCash(cash.filter((t) => t.type === 'animal_purchase'), ev.animalId, ev.tag, [ev]).filter((t) => t.date === ev.date && Number(t.amount) === Number(ev.value)).slice(0, 1).forEach((t) => voidOnce('cashTransactions', t.id));
     ledger.filter((e) => e.animalId === ev.animalId && e.type === 'capital_contribution' && !e.voided).forEach((e) => voidOnce('partnerCapitalTransactions', e.id));
+    if (!ledger.some((e) => !e.voided && e.type === 'animal_purchase_paid' && e.eventId === ev.id)) ops.push({ col: 'partnerCapitalTransactions', data: { partnerId: pid, date: ev.date, type: 'animal_purchase_paid', amount: Number(ev.value), currency: ev.currency || 'SYP', animalId: ev.animalId, eventId: ev.id, note: `شراء ${ev.tag}` } });
   }
   for (let i = 0; i < ops.length; i += 150) await commit(user, ops.slice(i, i + 150), 'update');
   return evs.length;
 }
-
+export const linkPurchasesToCapital = linkPurchasesToPartner;
+/** إلغاء قيود «رأس المال الابتدائي» (لم يعد مستخدماً: الحساب يُبنى من القروض وأثمان الحيوانات). */
+export async function voidInitialCapital(user, ledger = [], reason = 'إلغاء رأس المال الابتدائي (غير مستخدم)') {
+  const list = ledger.filter((e) => e.type === 'capital_contribution' && e.opening && !e.animalId && !e.voided);
+  if (!list.length) throw new Error('لا توجد قيود رأس مال ابتدائي');
+  await commit(user, list.map((e) => ({ col: 'partnerCapitalTransactions', id: e.id, merge: true, data: voidData(reason), action: 'void' })), 'void');
+  return list.length;
+}
+/** سداد لشريك من الصندوق: سلف أولاً (الأقدم فالأحدث) ثم ثمن البقر — أو حسب الاختيار. يرفض لو رصيد الصندوق لا يكفي. */
+export async function repayPartner(user, partner, { ledger = [], loans = [], repayments = [], cash = [] } = {}, { date, amount, accountId, order = 'loans_first', currency = 'SYP' }) {
+  if (!accountId) throw new Error('اختر الصندوق الذي يُسدَّد منه');
+  const debt = partnerDebt(partner.id, ledger, currency);
+  const plan = planPartnerRepayment({ loans: debt.loans, purchases: debt.purchases, other: debt.other, amount, order });
+  const avail = cashBalances(cash.filter((t) => !t.voided))[`${accountId}|${currency}`] || 0;
+  if (Number(amount) > avail + 0.005) throw new Error(`رصيد الصندوق لا يكفي (المتاح ${Math.round(avail * 100) / 100})`);
+  const ops = [];
+  if (plan.toLoans > 0) {
+    const { parts, unallocated } = allocateToLoans(partner.id, loans, repayments, plan.toLoans, currency);
+    if (unallocated > 0.005) throw new Error('لا توجد قروض نشطة تكفي لهذا الجزء من السداد');
+    for (const { loan, principal } of parts) {
+      ops.push({ col: 'partnerLoanRepayments', data: { loanId: loan.id, partnerId: partner.id, date, principalAmount: principal, interestAmount: 0, currency, accountId } });
+      ops.push({ col: 'partnerCapitalTransactions', data: { partnerId: partner.id, date, type: 'loan_principal_repayment', amount: principal, currency, loanId: loan.id } });
+      ops.push({ col: 'cashTransactions', data: { date, type: 'loan_repayment', direction: 'out', amount: principal, currency, accountId, partnerId: partner.id, loanId: loan.id } });
+    }
+  }
+  if (plan.toPurchases > 0) {
+    const lid = newId('partnerCapitalTransactions');
+    ops.push({ col: 'partnerCapitalTransactions', id: lid, data: { partnerId: partner.id, date, type: 'animal_purchase_repaid', amount: plan.toPurchases, currency, note: 'سداد ثمن حيوانات' } });
+    ops.push({ col: 'cashTransactions', data: { date, type: 'animal_purchase_repayment', direction: 'out', amount: plan.toPurchases, currency, accountId, partnerId: partner.id, ledgerEntryId: lid, description: 'سداد ثمن بقر للشريك' } });
+  }
+  if (plan.toOther > 0) {
+    const lid = newId('partnerCapitalTransactions');
+    ops.push({ col: 'partnerCapitalTransactions', id: lid, data: { partnerId: partner.id, date, type: 'reimbursement', amount: plan.toOther, currency, note: 'سداد مصروفات/مبالغ دفعها الشريك' } });
+    ops.push({ col: 'cashTransactions', data: { date, type: 'partner_reimbursement', direction: 'out', amount: plan.toOther, currency, accountId, partnerId: partner.id, ledgerEntryId: lid, description: 'سداد مصروفات/مبالغ للشريك' } });
+  }
+  await commit(user, ops);
+  return plan;
+}
 /** إلغاء حركات صندوق محدّدة (مثلاً حركة شراء حيوان مسجّلة مرتين). */
 export async function voidCashTransactions(user, txs, reason) {
   const ops = txs.map((t) => ({ col: 'cashTransactions', id: t.id, merge: true, data: voidData(reason), action: 'void' }));
   for (let i = 0; i < ops.length; i += 150) await commit(user, ops.slice(i, i + 150), 'void');
   return ops.length;
+}
+
+// ───────────── فئات مخصّصة ─────────────
+const catField = (kind) => (kind === 'animal' ? 'customAnimalCats' : 'customExpenseCats');
+/** يضيف فئة جديدة ويرجع معرّفها (لو الاسم موجود مسبقاً يرجع معرّف الموجود دون تكرار). */
+export async function addCustomCategory(user, kind, label, current = []) {
+  const clean = String(label || '').trim(); if (!clean) throw new Error('اكتب اسم الفئة الجديدة');
+  const hit = (kind === 'animal' ? allAnimalCategories() : allExpenseCategories()).find(([, l]) => String(l).trim() === clean);
+  if (hit) return hit[0];
+  const id = `c_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 5)}`;
+  await commit(user, [{ col: 'settings', id: 'counters', merge: true, data: { [catField(kind)]: [...current, { id, label: clean }] } }], 'update');
+  return id;
+}
+/** يحفظ قائمة الفئات المخصّصة كاملة (إعادة تسمية / حذف). */
+export const saveCustomCategories = (user, kind, list) => commit(user, [{ col: 'settings', id: 'counters', merge: true, data: { [catField(kind)]: list } }], 'update');
+
+/** تحويل فروق تبادل سبق دفعها من الصندوق إلى حساب شريك يحدّده المستخدم لكل فرق: تُلغى حركة الصندوق ويُقيَّد الفرق «ثمن حيوان دفعه الشريك» في حسابه. */
+export async function switchExchangeDiffToPartner(user, items, { events = [], ledger = [] } = {}) {
+  if (!items.length) throw new Error('لا توجد فروق للتحويل');
+  const groups = [];
+  for (const { tx, partnerId } of items) {
+    if (!partnerId) throw new Error('اختر الشريك لكل فرق');
+    if (tx.type !== 'animal_exchange_payment' || tx.voided) continue;
+    if (tx.exchangeId && ledger.some((e) => !e.voided && e.type === 'animal_purchase_paid' && e.exchangeId === tx.exchangeId)) continue; // محوَّل من قبل
+    const inEv = events.find((e) => !e.voided && e.exchangeId === tx.exchangeId && e.type === 'exchange_in');
+    groups.push([
+      { col: 'cashTransactions', id: tx.id, merge: true, data: voidData('فرق تبادل نُقل إلى حساب شريك'), action: 'void' },
+      { col: 'partnerCapitalTransactions', data: { partnerId, date: tx.date, type: 'animal_purchase_paid', amount: Number(tx.amount), currency: tx.currency || 'SYP', animalId: inEv?.animalId || null, exchangeId: tx.exchangeId || null, note: tx.description || 'فرق تبادل' } },
+      ...(inEv ? [{ col: 'animalEvents', id: inEv.id, merge: true, data: { diffPaidBy: partnerId } }] : []),
+    ]);
+  }
+  if (!groups.length) throw new Error('لا يوجد ما يُحوَّل (ربما حُوِّل من قبل)');
+  for (let i = 0; i < groups.length; i += 50) await commit(user, groups.slice(i, i + 50).flat(), 'update');
+  return groups.length;
 }

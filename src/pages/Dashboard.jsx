@@ -3,9 +3,9 @@ import { useMemo, useState } from 'react';
 import { Users, Milk, ShoppingCart, Wallet, Receipt, PawPrint, Droplets, UserPlus, FileText, Plus, CalendarDays } from 'lucide-react';
 import { ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip, CartesianGrid, PieChart, Pie, Cell, BarChart, Bar, Legend } from 'recharts';
 import { Card, Stat, Empty, Table, Badge, fmt, money, today } from '../components/ui';
-import { useCol, useSettings } from '../data/db';
+import { useCol, useSettings, useCustomLists, useStoreStatus } from '../data/db';
 import { catLabel } from '../lib/constants';
-import { herdState, cashBalances, sumByCurrency, partnerLedger, operatingExpenses, salesLedger, salesTotals, round2 } from '../lib/finance';
+import { herdState, cashBalances, sumByCurrency, partnerLedger, partnerDebt, operatingExpenses, salesLedger, salesTotals, round2 } from '../lib/finance';
 
 const COLORS = ['#2f7bd9', '#8b6fd6', '#f2a23a', '#4caf6a', '#ef5b5b', '#14b8a6'];
 
@@ -33,7 +33,7 @@ function PeriodFilter({ preset, setPreset, cFrom, setCFrom, cTo, setCTo, label }
 }
 
 export default function Dashboard() {
-  const s = useSettings();
+  const s = useSettings(); useCustomLists(); const loadSt = useStoreStatus();
   const prodAll = useCol('milkProduction').rows.filter((r) => !r.voided);
   const ags = useCol('milkSales').rows; const dls = useCol('milkDeliveries').rows;
   const custs = useCol('customers').rows; const exps = useCol('expenses').rows;
@@ -84,8 +84,7 @@ export default function Dashboard() {
       expPeriod: sumByCurrency(operatingExpenses(exps, { from: from || undefined, to: to || undefined }), (e) => e.amount),
       herd: Object.values(herdState(events, animalsAll)).filter((x) => x.active).length,
       pBal: partners.map((p) => ({ ...p, bal: partnerLedger(p.id, ledger, { currency: 'SYP' }).closing })),
-      capital: partners.reduce((a, p) => a + Number(p.initialCapital || 0), 0) + ledger.filter((e) => ['capital_contribution', 'additional_capital'].includes(e.type) && !e.voided && !e.opening && !e.animalId && (e.currency || 'SYP') === 'SYP').reduce((a, e) => a + Number(e.amount || 0), 0),
-      capitalUsed: round2(events.filter((e) => !e.voided && e.type === 'purchase' && e.paidFrom === 'capital' && (e.currency || 'SYP') === 'SYP' && !animalsAll.find((a) => a.id === e.animalId)?.voided).reduce((a, e) => a + Number(e.value || 0), 0)),
+      owed: round2(partners.reduce((a, p) => a + partnerDebt(p.id, ledger).total, 0)),
       recent: [...cash].filter((c) => !c.voided && inR(c.date)).sort((a, b) => b.date.localeCompare(a.date)).slice(0, 5) };
   }, [prodAll, ags, dls, custs, exps, cash, partners, ledger, events, animalsAll, t, from, to]); // eslint-disable-line
   const cashLine = Object.keys(d.bal).length ? Object.entries(d.bal).map(([c, v]) => money(v, c)).join('  |  ') : money(0);
@@ -102,10 +101,11 @@ export default function Dashboard() {
         <div className="mt-3 inline-block rounded-xl border border-white/25 bg-black/25 px-3 py-1.5 text-xs sm:mt-4 sm:px-4 sm:py-2 sm:text-sm">{long}</div>
       </div>
 
+      {loadSt.loading > 0 && <div className="rounded-xl bg-amber-50 p-3 text-sm font-bold text-amber-800">جارٍ تحميل البيانات… الأرقام ستكتمل خلال لحظات.</div>}
       <PeriodFilter preset={preset} setPreset={setPreset} cFrom={cFrom} setCFrom={setCFrom} cTo={cTo} setCTo={setCTo} label={periodLabel} />
 
       <div className="grid grid-cols-2 gap-2.5 sm:gap-3 md:grid-cols-3 xl:grid-cols-6">
-        <Stat label="شركاء المزرعة" value={partners.length} sub={`رأس المال ${money(d.capital)} — المتبقي ${money(round2(d.capital - d.capitalUsed))}`} icon={Users} />
+        <Stat label="شركاء المزرعة" value={partners.length} sub={`مستحق للشركاء (سلف + ثمن بقر): ${money(d.owed)}`} icon={Users} />
         <Stat label={`المصروفات${sfx}`} value={<span className="text-base sm:text-xl">{Object.keys(d.expPeriod).length ? Object.entries(d.expPeriod).map(([c, v]) => money(v, c)).join(' | ') : money(0)}</span>} sub="تشغيلية — بدون سلف الشركاء وسداد القروض" icon={Receipt} tone="red" />
         <Stat className="col-span-2 md:col-span-1" label="الرصيد النقدي (الحالي)" value={<span className="text-base sm:text-lg">{cashLine}</span>} sub="الفعلي في الصندوق: الوارد − الصادر (لكل عملة)" icon={Wallet} tone="amber" />
         <Stat className="col-span-2 md:col-span-1" label={`إجمالي المبيعات${sfx}`} value={money(d.salesTotal)} sub={`حليب ${fmt(d.salesMilk)} + حيوانات ${fmt(d.salesAnimal)}${d.salesOther ? ` + أخرى ${fmt(d.salesOther)}` : ''} (قيمة وليست النقد المقبوض)`} icon={ShoppingCart} tone="purple" />

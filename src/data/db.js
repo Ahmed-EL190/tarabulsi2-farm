@@ -1,16 +1,49 @@
-import { useEffect, useState } from 'react';
+import { setCustomLists } from '../lib/constants';
+import { useEffect, useState, useCallback, useSyncExternalStore } from 'react';
 import { collection, doc, onSnapshot, writeBatch, runTransaction, serverTimestamp, query, orderBy, limit } from 'firebase/firestore';
 import { db } from '../lib/firebase';
 
-/** Live collection hook. Returns { rows, loading }. Rows include id. */
-export function useCol(name) {
-  const [state, set] = useState({ rows: [], loading: true });
-  useEffect(() => {
-    if (!db) return;
-    return onSnapshot(collection(db, name), (s) => set({ rows: s.docs.map((d) => ({ id: d.id, ...d.data() })), loading: false }), () => set({ rows: [], loading: false }));
-  }, [name]);
-  return state;
+// ───────────── مخزن بيانات مشترك ─────────────
+// كل جدول يُشترك فيه مرة واحدة فقط لكل الجلسة (بدل اشتراك لكل مكوّن/صفحة)، ويبقى الاشتراك حيّاً 10 دقائق بعد مغادرة الصفحة،
+// ويُحدَّث فقط ما تغيّر (docChanges) فتبقى مراجع السجلات ثابتة. مع التخزين المحلي الدائم يصبح فتح الصفحات فورياً.
+const EMPTY = Object.freeze([]);
+const store = new Map();
+const statusSubs = new Set(); let statusSnap = { loading: 0, syncing: false };
+const calcStatus = () => {
+  let loading = 0, syncing = false;
+  for (const c of store.values()) { if (c.snap.loading) loading++; else if (c.fromCache) syncing = true; }
+  if (loading !== statusSnap.loading || syncing !== statusSnap.syncing) { statusSnap = { loading, syncing }; statusSubs.forEach((f) => f()); }
+};
+function ensure(name) {
+  let c = store.get(name); if (c) return c;
+  c = { map: new Map(), snap: { rows: EMPTY, loading: !!db }, subs: new Set(), unsub: null, timer: null, fromCache: false, first: true };
+  store.set(name, c); queueMicrotask(calcStatus); // لا نُخطر المكوّنات أثناء الرسم
+  if (!db) return c;
+  const sorted = () => Array.from(c.map.values()).sort((x, y) => (x.id < y.id ? -1 : x.id > y.id ? 1 : 0));
+  c.unsub = onSnapshot(collection(db, name), { includeMetadataChanges: true }, (s) => {
+    let changed = false;
+    if (c.first) { s.docs.forEach((d) => c.map.set(d.id, { id: d.id, ...d.data() })); changed = true; }
+    else s.docChanges().forEach((ch) => { changed = true; if (ch.type === 'removed') c.map.delete(ch.doc.id); else c.map.set(ch.doc.id, { id: ch.doc.id, ...ch.doc.data() }); });
+    const fc = s.metadata.fromCache; const fcChanged = fc !== c.fromCache; c.fromCache = fc;
+    if (changed) { c.first = false; c.snap = { rows: sorted(), loading: false }; }
+    if (changed || fcChanged) { c.subs.forEach((f) => f()); calcStatus(); }
+  }, () => { c.first = false; c.snap = { rows: EMPTY, loading: false }; c.subs.forEach((f) => f()); calcStatus(); });
+  return c;
 }
+export const _store = { ensure, status: () => statusSnap }; // للاختبارات
+/** Live collection hook. Returns { rows, loading }. Rows include id. (مشترك بين كل المكوّنات) */
+export function useCol(name) {
+  const c = ensure(name);
+  const subscribe = useCallback((cb) => {
+    c.subs.add(cb); clearTimeout(c.timer);
+    return () => { c.subs.delete(cb); if (!c.subs.size) c.timer = setTimeout(() => { if (!c.subs.size) { c.unsub?.(); if (store.get(name) === c) store.delete(name); calcStatus(); } }, 10 * 60 * 1000); };
+  }, [c, name]);
+  return useSyncExternalStore(subscribe, () => c.snap, () => c.snap);
+}
+/** يُستدعى عند تسجيل الدخول/الخروج: يغلق كل الاشتراكات لتبدأ من جديد بصلاحيات المستخدم الجديد. */
+export function resetStore() { for (const c of store.values()) { clearTimeout(c.timer); c.unsub?.(); } store.clear(); statusSnap = { loading: 0, syncing: false }; statusSubs.forEach((f) => f()); }
+/** حالة التحميل العامة: عدد الجداول التي لم تصل بعد، وهل البيانات المعروضة من التخزين المحلي بانتظار تأكيد الخادم. */
+export function useStoreStatus() { return useSyncExternalStore((cb) => { statusSubs.add(cb); return () => statusSubs.delete(cb); }, () => statusSnap, () => statusSnap); }
 export function useAudit(max = 300) {
   const [rows, set] = useState([]);
   useEffect(() => {
@@ -23,6 +56,13 @@ export function useSettings() {
   const { rows } = useCol('settings');
   const s = rows.find((r) => r.id === 'main') || {};
   return { farmName: 'مزرعة آل الطرابلسي', currencies: ['SYP', 'USD'], baseCurrency: 'SYP', animalPurchaseAsExpense: true, ...s };
+}
+
+/** القوائم المخصّصة (فئات مصروفات/حيوانات) — تُخزَّن في settings/counters (يكتبها كل من يملك صلاحية الإضافة). */
+export function useCustomLists() {
+  const { rows } = useCol('settings'); const c = rows.find((r) => r.id === 'counters') || {};
+  const lists = { expense: c.customExpenseCats || [], animal: c.customAnimalCats || [] };
+  setCustomLists(lists); return lists;
 }
 
 export const newId = (col) => doc(collection(db, col)).id;

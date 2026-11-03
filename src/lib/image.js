@@ -1,5 +1,5 @@
-// ضغط الصورة في المتصفح قبل حفظها (الحد الأقصى ~640px و~140KB) كي تبقى سريعة على الموبايل وتُخزَّن مع السجل مباشرة.
-export function compressImage(file, { max = 640, quality = 0.75, maxBytes = 140000 } = {}) {
+// ضغط الصورة في المتصفح قبل حفظها (الحد الأقصى ~480px و~45KB: خفيفة كي لا تُبطّئ تحميل بيانات الحيوانات) كي تبقى سريعة على الموبايل وتُخزَّن مع السجل مباشرة.
+export function compressImage(file, { max = 480, quality = 0.7, maxBytes = 45000 } = {}) {
   return new Promise((resolve, reject) => {
     if (!file || !file.type?.startsWith('image/')) return reject(new Error('اختر ملف صورة'));
     const url = URL.createObjectURL(file); const img = new Image();

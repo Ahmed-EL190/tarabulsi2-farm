@@ -133,11 +133,12 @@ export function loanPosition(loan, repayments = [], asOf = todayISO()) {
 const LEDGER_SIGN = {
   opening_balance: 1, capital_contribution: 1, additional_capital: 1, loan_given: 1, loan_principal_repayment: -1,
   interest_accrued: 1, interest_paid: -1, expense_paid_personally: 1, reimbursement: -1, withdrawal: -1,
-  profit_allocation: 1, profit_distribution: -1, adjustment: 1,
+  profit_allocation: 1, profit_distribution: -1, adjustment: 1, animal_purchase_paid: 1, animal_purchase_repaid: -1,
 };
 export const LEDGER_TYPES = Object.keys(LEDGER_SIGN);
 export function partnerLedger(partnerId, entries, { currency, from, to } = {}) {
-  const mine = entries.filter((e) => e.partnerId === partnerId && !e.voided && (!currency || e.currency === currency))
+  // رأس المال الابتدائي القديم (والقيود الناتجة عن تحويلات رأس المال القديمة) لم يعد جزءاً من حساب الشريك
+  const mine = entries.filter((e) => e.partnerId === partnerId && !e.voided && !(e.type === 'capital_contribution' && (e.opening || e.animalId)) && (!currency || e.currency === currency))
     .sort((a, b) => a.date.localeCompare(b.date));
   let bal = 0; const rows = [];
   for (const e of mine) {
@@ -160,6 +161,54 @@ export function partnerCapital(partner, ledger = [], events = [], animals = [], 
   const purchases = events.filter((e) => !e.voided && e.type === 'purchase' && e.paidFrom === 'capital' && e.capitalPartnerId === partner.id && (e.currency || 'SYP') === currency && !gone.has(e.animalId));
   const used = round2(purchases.reduce((s, e) => s + n(e.value), 0));
   return { deposited, used, remaining: round2(deposited - used), purchases };
+}
+
+/** ما على المزرعة لشريك — ثلاثة أبواب تزيد تلقائياً وتنقص عند السداد:
+ *  loans: سلف أعطاها للمزرعة · purchases: ثمن حيوانات دفعها (أو اشتريناها منه) · other: مصروفات دفعها من ماله + مبالغ زائدة أودعها. */
+export function partnerDebt(partnerId, ledger = [], currency = 'SYP') {
+  const mine = ledger.filter((e) => e.partnerId === partnerId && !e.voided && !(e.type === 'capital_contribution' && (e.opening || e.animalId)) && (e.currency || 'SYP') === currency);
+  const sum = (...ts) => round2(mine.filter((e) => ts.includes(e.type)).reduce((s, e) => s + n(e.amount), 0));
+  const loans = round2(sum('loan_given') - sum('loan_principal_repayment'));
+  const purchases = round2(sum('animal_purchase_paid') - sum('animal_purchase_repaid'));
+  const other = round2(sum('expense_paid_personally', 'additional_capital', 'capital_contribution') - sum('reimbursement'));
+  return { loans, purchases, other, total: round2(loans + purchases + other), loansTotal: sum('loan_given'), purchasesTotal: sum('animal_purchase_paid'), withdrawals: sum('withdrawal'), distributions: sum('profit_distribution') };
+}
+/** يوزّع مبلغ السداد على الأبواب الثلاثة: الافتراضي سلف ← ثمن بقر ← مصروفات/مبالغ؛ أو ثمن البقر أولاً؛ أو باب واحد فقط. يرمي خطأ لو المبلغ أكبر من المستحق. */
+export function planPartnerRepayment({ loans, purchases, other = 0, amount, order = 'loans_first' }) {
+  const amt = round2(amount); if (!(amt > 0)) throw new Error('أدخل مبلغاً أكبر من صفر');
+  const room = { loans: Math.max(0, n(loans)), purchases: Math.max(0, n(purchases)), other: Math.max(0, n(other)) };
+  const seq = { loans_first: ['loans', 'purchases', 'other'], purchases_first: ['purchases', 'loans', 'other'], loans_only: ['loans'], purchases_only: ['purchases'], other_only: ['other'] }[order] || ['loans', 'purchases', 'other'];
+  const cap = round2(seq.reduce((s, k) => s + room[k], 0));
+  if (amt > cap + 0.005) throw new Error(`المبلغ أكبر من المستحق (${cap}) حسب الاختيار`);
+  let left = amt; const out = { loans: 0, purchases: 0, other: 0 };
+  for (const k of seq) { const take = Math.min(left, room[k]); out[k] = round2(take); left = round2(left - take); }
+  return { toLoans: out.loans, toPurchases: out.purchases, toOther: out.other };
+}
+/** يوزّع مبلغاً على قروض الشريك النشطة: الأقدم أولاً. */
+export function allocateToLoans(partnerId, loans = [], repayments = [], amount, currency = 'SYP') {
+  let left = round2(amount); const out = [];
+  for (const l of loans.filter((x) => !x.voided && x.partnerId === partnerId && (x.currency || 'SYP') === currency).sort((a, b) => (a.disbursementDate || '').localeCompare(b.disbursementDate || ''))) {
+    if (left <= 0) break; const open = loanPosition(l, repayments).outstandingPrincipal; if (open <= 0) continue;
+    const take = round2(Math.min(open, left)); out.push({ loan: l, principal: take }); left = round2(left - take);
+  }
+  return { parts: out, unallocated: left };
+}
+/** حركات صندوق «يتيمة»: أصلها (مصروف/دفعة/حيوان/قيد) ملغى أو محذوف لكنها ما زالت تُحتسب في الصندوق وتظهر في الكشف. */
+export function findOrphanCash({ cash = [], expensePays = [], expenses = [], custPays = [], animals = [], ledger = [], events = [] }) {
+  const byId = (arr) => Object.fromEntries(arr.map((x) => [x.id, x]));
+  const EP = byId(expensePays), EX = byId(expenses), CP = byId(custPays), AN = byId(animals), LE = byId(ledger);
+  const out = [];
+  for (const t of cash) {
+    if (t.voided) continue; let why = '';
+    if (t.expensePaymentId) { const p = EP[t.expensePaymentId]; const e = p && EX[p.expenseId]; if (!p || p.voided) why = 'دفعة مصروف ملغاة'; else if (!e || e.voided) why = 'مصروف ملغى'; }
+    else if (t.expenseId && (!EX[t.expenseId] || EX[t.expenseId].voided)) why = 'مصروف ملغى';
+    if (!why && t.customerPaymentId) { const p = CP[t.customerPaymentId]; if (!p || p.voided) why = 'دفعة عميل ملغاة'; }
+    if (!why && t.animalId && ['animal_purchase', 'animal_sale'].includes(t.type)) { const a = AN[t.animalId]; if (!a || a.voided) why = 'حيوان ملغى'; }
+    if (!why && t.ledgerEntryId) { const l = LE[t.ledgerEntryId]; if (!l || l.voided) why = 'قيد شريك ملغى'; }
+    if (!why && t.exchangeId) { const evs = events.filter((e) => e.exchangeId === t.exchangeId); if (evs.length && evs.every((e) => e.voided)) why = 'تبادل ملغى'; }
+    if (why) out.push({ tx: t, reason: why });
+  }
+  return out;
 }
 
 /** Partner-funded expense: the expense is recorded ONCE; the ledger gets a linked entry (no second expense). */
@@ -240,22 +289,16 @@ export function allocateProfit(netProfit, partners) {
   return raw.map((r) => ({ ...r, amount: round2(r.amount) }));
 }
 
-/** مدخلات الأرباح الخاصة بالمواشي — مصدر واحد للتسويات والتقارير.
- *  asExpense=true : الشراء مصروف، والبيع إيراد كامل (كما في ملف Excel الأصلي).
- *  asExpense=false: لا يُحتسب الشراء، ويُحتسب في البيع الربح/الخسارة فقط (سعر البيع − تكلفة الحيوان).
- *  التبادل = بيع للحيوان الخارج بقيمته المتفق عليها + شراء للحيوان الوارد (فقط لو سُجّل جديداً عبر التبادل، لتفادي تكرار شراء سُجّل سابقاً). */
-export function animalPLInputs(events = [], animals = [], asExpense = true) {
+/** مدخلات الأرباح الخاصة بالمواشي — مصدر واحد للتسويات والتقارير. */
+export function animalPLInputs(events = [], animals = []) {
+  // سياسة الأرباح: شراء الحيوانات لا يدخل أبداً؛ وبيع الحيوانات يدخل بسعر البيع كاملاً ضمن المبيعات. التبادل خارج الأرباح (ليس بيعاً نقدياً).
   const byId = Object.fromEntries(animals.map((a) => [a.id, a]));
-  const cost = (id) => n(byId[id]?.acquisitionCost);
-  const animalSales = [], animalPurchases = [];
+  const animalSales = [];
   for (const e of events) {
-    if (e.voided || byId[e.animalId]?.voided) continue;
-    const row = (amount) => ({ date: e.date, currency: e.currency || 'SYP', amount });
-    if (e.type === 'sale') animalSales.push(row(asExpense ? n(e.value) : round2(n(e.value) - n(e.costBasis ?? cost(e.animalId)))));
-    else if (e.type === 'exchange_out') animalSales.push(row(asExpense ? n(e.value) : round2(n(e.value) - cost(e.animalId))));
-    else if (asExpense && n(e.value) > 0 && (e.type === 'purchase' || (e.type === 'exchange_in' && byId[e.animalId]?.viaExchange))) animalPurchases.push(row(n(e.value)));
+    if (e.voided || byId[e.animalId]?.voided || e.type !== 'sale') continue;
+    animalSales.push({ date: e.date, currency: e.currency || 'SYP', amount: n(e.value) });
   }
-  return { animalSales, animalPurchases };
+  return { animalSales, animalPurchases: [] };
 }
 
 // ───────────── Animals ─────────────
