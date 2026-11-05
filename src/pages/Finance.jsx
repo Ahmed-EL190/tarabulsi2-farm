@@ -4,10 +4,10 @@ import CrudPage, { FormModal } from '../components/CrudPage';
 import ExportButtons from '../components/ExportButtons';
 import { Card, Table, Badge, Empty, PageHeader, Stat, Modal, money, fmt, today } from '../components/ui';
 import { useCol, useSettings, useCustomLists, saveRecord, commit, voidRecord } from '../data/db';
-import { payExpense, addExpenseWithPayment, updateExpenseSynced, updateExpensePayment, voidExpensePayment, updateCustomerPayment, voidCustomerPayment, addCustomCategory, transferCash, addOtherIncome, createLoan, repayLoan, finalizeSettlement, partnerMovement, voidExpenseCascade, voidSettlement, voidDistribution, voidCashTransactions } from '../data/ops';
+import { payExpense, addExpenseWithPayment, updateExpenseSynced, updateExpensePayment, voidExpensePayment, updateCustomerPayment, voidCustomerPayment, addCustomCategory, transferCash, addOtherIncome, createLoan, repayLoan, finalizeSettlement, partnerMovement, voidExpenseCascade, voidSettlement, voidDistribution, voidCashTransactions, linkExpensesToPartners } from '../data/ops';
 import { useAuth } from '../data/auth';
 import { cashBalances, cashFlowSummary, expensePosition, loanPosition, partnerLedger, profitAndLoss, allocateProfit, validateShares, customerPosition, animalPLInputs, findOrphanCash, round2, sumByCurrency } from '../lib/finance';
-import { CURRENCIES, METHODS, allExpenseCategories, NEW_CAT, catLabel, CASH_AR } from '../lib/constants';
+import { CURRENCIES, METHODS, allExpenseCategories, NEW_CAT, catLabel, CASH_AR, PARTNER_EXPENSE_CATS } from '../lib/constants';
 
 const cur = { name: 'currency', label: 'العملة', type: 'select', options: CURRENCIES, required: true, default: 'SYP' };
 const acct = { name: 'accountId', label: 'الصندوق / الحساب', type: 'rel', col: 'cashAccounts' };
@@ -83,10 +83,10 @@ export function Cash() {
 function ExpensePaymentsModal({ expense, onClose }) {
   const { user, can } = useAuth();
   const pays = useCol('expensePayments').rows; const cash = useCol('cashTransactions').rows; const ledger = useCol('partnerCapitalTransactions').rows;
-  const accounts = useCol('cashAccounts').rows; const partners = useCol('partners').rows;
+  const accounts = useCol('cashAccounts').rows; const partners = useCol('partners').rows; const reps = useCol('partnerLoanRepayments').rows;
   const [ed, setEd] = useState(null);
   const mine = pays.filter((p) => p.expenseId === expense.id && !p.voided).sort((a, b) => a.date.localeCompare(b.date));
-  const pos = expensePosition(expense, pays); const links = { cash, ledger };
+  const pos = expensePosition(expense, pays); const links = { cash, ledger, reps };
   return (
     <Modal open onClose={onClose} title={`دفعات: ${expense.description}`} wide>
       <div className="mb-3 grid grid-cols-3 gap-2"><Stat label="المستحق" value={<span className="text-base">{fmt(expense.amount)}</span>} /><Stat label="المدفوع" value={<span className="text-base">{fmt(pos.paid)}</span>} tone="green" /><Stat label="المتبقي" value={<span className="text-base">{fmt(pos.outstanding)}</span>} tone="red" /></div>
@@ -103,33 +103,52 @@ function ExpensePaymentsModal({ expense, onClose }) {
   );
 }
 
+/** مصروفات قديمة من نوع (سحب شريك / سلف شريك / سداد أصل قرض) لم تُقيَّد في حساب شريك ← اربطها بالشريك الصحيح. */
+function LinkPartnerExpenses() {
+  const { user, can } = useAuth(); const expenses = useCol('expenses').rows; const pays = useCol('expensePayments').rows; const ledger = useCol('partnerCapitalTransactions').rows; const loans = useCol('partnerLoans').rows; const reps = useCol('partnerLoanRepayments').rows; const partners = useCol('partners').rows.filter((p) => !p.voided);
+  const [open, setOpen] = useState(false); const [sel, setSel] = useState({}); const [err, setErr] = useState('');
+  const pending = expenses.filter((e) => !e.voided && PARTNER_EXPENSE_CATS[e.category] && !e.partnerAccountId && !ledger.some((l) => !l.voided && l.expenseId === e.id && Object.values(PARTNER_EXPENSE_CATS).includes(l.type))).sort((a, b) => a.date.localeCompare(b.date));
+  if (!pending.length || !can('update')) return null;
+  const guess = (e) => partners.find((p) => e.workerName && (p.name.includes(e.workerName) || e.workerName.includes(p.name)))?.id || (partners.length === 1 ? partners[0].id : '');
+  const who = (e) => sel[e.id] ?? guess(e);
+  const run = async (items) => { setErr(''); try { await linkExpensesToPartners(user, items, { pays, ledger, loans, repayments: reps }); } catch (e) { setErr(e.message); } };
+  return (<><button className="btn btn-ghost" onClick={() => setOpen(true)}>ربط مصروفات الشركاء بحساباتهم ({pending.length})</button>
+    {open && <Modal open onClose={() => setOpen(false)} title="مصروفات شركاء غير مقيّدة في حساباتهم" wide>
+      <p className="mb-2 text-xs text-slate-500">سحب شريك ← يُقيَّد «سحب» في حسابه · سلفة شريك ← «سلفة أخذها» · سداد أصل قرض ← يُنقص أصل سلفته ويُقيَّد سداد. اختر الشريك لكل صف.</p>
+      {err && <div className="mb-2 text-sm font-bold text-red-600">{err}</div>}
+      <Table rows={pending} columns={[{ key: 'date', label: 'التاريخ' }, { key: 'category', label: 'النوع', render: (r) => catLabel(r.category) }, { key: 'description', label: 'البيان', hideMobile: true }, { key: 'amount', label: 'المبلغ', render: (r) => <b className="num">{money(r.amount, r.currency)}</b> },
+        { key: 'p', label: 'الشريك', render: (r) => <select className="input !py-1" value={who(r)} onChange={(e) => setSel({ ...sel, [r.id]: e.target.value })}><option value="">— اختر —</option>{partners.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}</select> },
+        { key: '_a', label: '', render: (r) => <button className="btn btn-ghost !px-2.5 !py-1 text-xs" onClick={() => run([{ expense: r, partnerId: who(r) }])}>ربط</button> }]} />
+      <button className="btn btn-primary mt-3 w-full sm:w-auto" onClick={() => { if (confirm(`ربط ${pending.length} مصروف بحسابات الشركاء المختارين؟`)) run(pending.map((e) => ({ expense: e, partnerId: who(e) }))); }}>ربط الكل</button>
+    </Modal>}</>);
+}
 export function Expenses() {
   const { user } = useAuth(); const [pay, setPay] = useState(null); const [pm, setPm] = useState(null); const lists = useCustomLists();
-  const ctx = () => ({ pays: useCol('expensePayments').rows, cash: useCol('cashTransactions').rows, ledger: useCol('partnerCapitalTransactions').rows });
+  const ctx = () => ({ pays: useCol('expensePayments').rows, cash: useCol('cashTransactions').rows, ledger: useCol('partnerCapitalTransactions').rows, loans: useCol('partnerLoans').rows, reps: useCol('partnerLoanRepayments').rows });
   return (<>
-    <CrudPage title="المصروفات" subtitle="فلتر بالفئة وحالة الدفع. المصروف المستحق ≠ المدفوع. الدفع من حساب أو من شريك (دون تكرار المصروف)" col="expenses" searchKeys={['description', 'supplierName']} useCtx={ctx} defaults={{ payDate: '' }}
+    <CrudPage title="المصروفات" subtitle="فلتر بالفئة وحالة الدفع. المصروف المستحق ≠ المدفوع. الدفع من حساب أو من شريك (دون تكرار المصروف)" col="expenses" searchKeys={['description', 'supplierName']} useCtx={ctx} defaults={{ payDate: '' }} extraHeader={<LinkPartnerExpenses />}
       onVoid={(u, r, c, why) => voidExpenseCascade(u, r, c, why)}
       filters={[{ key: 'category', label: 'الفئة', options: allExpenseCategories(), allLabel: 'كل الفئات' }, { key: '_st', label: 'حالة الدفع', allLabel: 'الكل', options: [['paid', 'مدفوع'], ['partial', 'مدفوع جزئياً'], ['unpaid', 'غير مدفوع']], test: (r, v, c) => expensePosition(r, c.pays || []).status === v }]}
       summary={(rows, { pays = [] }) => { const lst = (o) => (Object.keys(o).length ? Object.entries(o).map(([c, v]) => money(v, c)).join(' | ') : money(0)); return rows.length ? <div className="mb-1 grid grid-cols-2 gap-3 sm:grid-cols-3"><Stat label="عدد المصروفات المعروضة" value={rows.length} /><Stat label="إجمالي المستحق" value={<span className="text-base sm:text-xl">{lst(sumByCurrency(rows, (r) => r.amount))}</span>} tone="red" /><Stat className="col-span-2 sm:col-span-1" label="غير المدفوع منها" value={<span className="text-base sm:text-xl">{lst(sumByCurrency(rows, (r) => expensePosition(r, pays).outstanding))}</span>} tone="amber" /></div> : null; }}
-      fields={[{ name: 'date', label: 'تاريخ المصروف / الفاتورة', type: 'date', required: true }, { name: 'category', label: 'الفئة', type: 'select', required: true, options: [...allExpenseCategories(), NEW_CAT], default: 'feed' }, { name: 'newCategory', label: 'اسم الفئة الجديدة', type: 'text', showIf: (v) => v.category === '__new__' }, { name: 'description', label: 'الوصف', type: 'text', required: true }, { name: 'amount', label: 'المبلغ', type: 'number', required: true, positive: true }, cur, { name: 'supplierName', label: 'المورّد / المستلم', type: 'text' }, { name: 'animalId', label: 'رقم الحيوان (للعلاج، اختياري)', type: 'rel', col: 'animals', optLabel: (r) => r.tag + (r.name ? ' - ' + r.name : '') }, { name: 'workerName', label: 'اسم العامل / الشريك (للسلف)', type: 'text' }, { name: 'activity', label: 'النشاط المرتبط', type: 'text' }, { name: 'notes', label: 'ملاحظات', type: 'textarea' },
+      fields={[{ name: 'date', label: 'تاريخ المصروف / الفاتورة', type: 'date', required: true }, { name: 'category', label: 'الفئة', type: 'select', required: true, options: [...allExpenseCategories(), NEW_CAT], default: 'feed' }, { name: 'newCategory', label: 'اسم الفئة الجديدة', type: 'text', showIf: (v) => v.category === '__new__' }, { name: 'description', label: 'الوصف', type: 'text', required: true }, { name: 'amount', label: 'المبلغ', type: 'number', required: true, positive: true }, cur, { name: 'supplierName', label: 'المورّد / المستلم', type: 'text' }, { name: 'animalId', label: 'رقم الحيوان (للعلاج، اختياري)', type: 'rel', col: 'animals', optLabel: (r) => r.tag + (r.name ? ' - ' + r.name : '') }, { name: 'partnerAccountId', label: 'الشريك (يُقيَّد أثر هذا المصروف في حسابه)', type: 'rel', col: 'partners', showIf: (v) => !!PARTNER_EXPENSE_CATS[v.category] }, { name: 'workerName', label: 'اسم العامل / الشريك (للسلف)', type: 'text' }, { name: 'activity', label: 'النشاط المرتبط', type: 'text' }, { name: 'notes', label: 'ملاحظات', type: 'textarea' },
         { name: 'payNow', label: 'الدفع', type: 'select', required: true, default: 'no', options: [['no', 'غير مدفوع (آجل) — يُدفع لاحقاً'], ['full', 'مدفوع بالكامل الآن'], ['partial', 'مدفوع جزئياً الآن']] },
         { name: 'paidAmount', label: 'المبلغ المدفوع (للدفع الجزئي فقط)', type: 'number', min: 0 },
         { name: 'payDate', label: 'تاريخ الدفع الفعلي (اتركه فارغاً = نفس تاريخ المصروف)', type: 'date' },
         { name: 'source', label: 'مصدر الدفع (عند الدفع الآن)', type: 'select', default: 'account', options: [['account', 'من صندوق/حساب المزرعة'], ['partner', 'دفعه شريك من ماله']] },
         { ...acct, label: 'الصندوق (عند الدفع من المزرعة)' }, { name: 'partnerId', label: 'الشريك (إن دفع الشريك)', type: 'rel', col: 'partners' }]}
-      createOnlyFields={['payNow', 'paidAmount', 'payDate', 'source', 'accountId', 'partnerId']}
-      create={async (u, d) => { const { payNow, paidAmount, payDate, source, accountId, partnerId, newCategory, ...exp } = d; if (exp.category === '__new__') exp.category = await addCustomCategory(u, 'expense', newCategory, lists.expense); await addExpenseWithPayment(u, exp, { payNow, paidAmount, payDate, source, accountId, partnerId }); }}
+      createOnlyFields={['payNow', 'paidAmount', 'payDate', 'source', 'accountId', 'partnerId', 'partnerAccountId']}
+      create={async (u, d, c) => { const { payNow, paidAmount, payDate, source, accountId, partnerId, newCategory, ...exp } = d; if (exp.category === '__new__') exp.category = await addCustomCategory(u, 'expense', newCategory, lists.expense); await addExpenseWithPayment(u, exp, { payNow, paidAmount, payDate, source, accountId, partnerId, loans: c.loans, repayments: c.reps }); }}
       update={async (u, d, e, c) => { const { newCategory, ...rest } = d; if (rest.category === '__new__') rest.category = await addCustomCategory(u, 'expense', newCategory, lists.expense); return updateExpenseSynced(u, e, rest, c); }}
       cols={({ pays }) => [{ key: 'date', label: 'التاريخ' }, { key: 'category', label: 'الفئة', render: (r) => catLabel(r.category) }, { key: 'description', label: 'الوصف' }, { key: 'supplierName', label: 'المورّد' }, { key: 'amount', label: 'المستحق', render: (r) => <span className="num">{money(r.amount, r.currency)}</span> },
         { key: 'paid', label: 'المدفوع', render: (r) => <span className="num">{fmt(expensePosition(r, pays).paid)}</span> }, { key: 'out', label: 'المتبقي', render: (r) => <b className="num">{fmt(expensePosition(r, pays).outstanding)}</b> },
         { key: 'st', label: 'الحالة', render: (r) => { const s = expensePosition(r, pays).status; return <Badge tone={s === 'paid' ? 'green' : s === 'partial' ? 'amber' : 'red'}>{{ paid: 'مدفوع', partial: 'جزئي', unpaid: 'غير مدفوع', overpaid: 'زائد' }[s]}</Badge>; } }]}
-      rowActions={(r, { pays }) => <>
-        {expensePosition(r, pays).outstanding > 0 && <button className="rounded p-1.5 hover:bg-slate-100" title="تسجيل دفعة" onClick={() => setPay({ e: r, pays })}><HandCoins size={15} /></button>}
-        {expensePosition(r, pays).paid > 0 && <button className="rounded p-1.5 hover:bg-slate-100" title="الدفعات (تعديل التاريخ / إلغاء)" onClick={() => setPm(r)}><ListChecks size={15} /></button>}</>} />
+      rowActions={(r, ctx) => { const pays = ctx.pays; return <>
+        {expensePosition(r, pays).outstanding > 0 && <button className="rounded p-1.5 hover:bg-slate-100" title="تسجيل دفعة" onClick={() => setPay({ e: r, pays, ctx })}><HandCoins size={15} /></button>}
+        {expensePosition(r, pays).paid > 0 && <button className="rounded p-1.5 hover:bg-slate-100" title="الدفعات (تعديل التاريخ / إلغاء)" onClick={() => setPm(r)}><ListChecks size={15} /></button>}</>; }} />
     {pm && <ExpensePaymentsModal expense={pm} onClose={() => setPm(null)} />}
     {pay && <FormModal open onClose={() => setPay(null)} title={`دفع مصروف: ${pay.e.description}`} submitLabel="تسجيل الدفع" defaults={{ date: today(), source: 'account', amount: expensePosition(pay.e, pay.pays).outstanding }}
       fields={[{ name: 'date', label: 'تاريخ الدفع', type: 'date', required: true }, { name: 'amount', label: `المبلغ (المتبقي ${fmt(expensePosition(pay.e, pay.pays).outstanding)})`, type: 'number', required: true, positive: true }, { name: 'source', label: 'مصدر الدفع', type: 'select', required: true, options: [['account', 'من صندوق/حساب المزرعة'], ['partner', 'دفعه شريك من ماله الشخصي']] }, acct, { name: 'partnerId', label: 'الشريك (إن دفع الشريك)', type: 'rel', col: 'partners' }]}
-      onSubmit={(d) => { if (d.source === 'account' && !d.accountId) throw new Error('اختر الصندوق'); if (d.source === 'partner' && !d.partnerId) throw new Error('اختر الشريك'); return payExpense(user, pay.e, pay.pays, d); }} />}
+      onSubmit={(d) => { if (d.source === 'account' && !d.accountId) throw new Error('اختر الصندوق'); if (d.source === 'partner' && !d.partnerId) throw new Error('اختر الشريك'); return payExpense(user, pay.e, pay.pays, d, { loans: pay.ctx?.loans, repayments: pay.ctx?.reps }); }} />}
   </>);
 }
 

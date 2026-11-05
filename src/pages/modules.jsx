@@ -97,7 +97,7 @@ function LedgerModal({ partner, onClose }) {
   const tagOf = (id) => animals.find((a) => a.id === id)?.tag;
   const rows = L.rows.map((r) => ({ ...r, typeAr: LEDGER_AR[r.type] || r.type, what: [LEDGER_AR[r.type] || r.type, r.animalId && tagOf(r.animalId) ? `(${tagOf(r.animalId)})` : '', r.note || r.description || ''].filter(Boolean).join(' — '), credit: r.delta > 0 ? r.delta : 0, debit: r.delta < 0 ? -r.delta : 0 }));
   const report = { farm: s.farmName, title: `كشف حساب الشريك - ${partner.name}`, from, to, currency: c, columns: [{ key: 'date', label: 'التاريخ', type: 'date' }, { key: 'what', label: 'البيان' }, { key: 'credit', label: 'له (يزيد مستحقه)', type: 'money' }, { key: 'debit', label: 'عليه (سداد / سحب)', type: 'money' }, { key: 'balance', label: 'الرصيد', type: 'money' }], rows,
-    totals: { credit: round2(rows.reduce((a, r) => a + r.credit, 0)), debit: round2(rows.reduce((a, r) => a + r.debit, 0)) }, summary: [{ label: 'سلف مستحقة', value: dbt.loans }, { label: 'ثمن حيوانات مستحق', value: dbt.purchases }, { label: 'مصروفات/مبالغ دفعها', value: dbt.other }, { label: 'إجمالي ما سحبه', value: dbt.withdrawals }, { label: 'الرصيد الختامي', value: L.closing }] };
+    totals: { credit: round2(rows.reduce((a, r) => a + r.credit, 0)), debit: round2(rows.reduce((a, r) => a + r.debit, 0)) }, summary: [{ label: 'سلف مستحقة', value: dbt.loans }, { label: 'ثمن حيوانات مستحق', value: dbt.purchases }, { label: 'مصروفات/مبالغ دفعها', value: dbt.other }, { label: 'سحوبات وسلف أخذها', value: dbt.withdrawals + dbt.advances }, { label: 'الرصيد الختامي', value: L.closing }] };
   return (
     <Modal open onClose={onClose} title={report.title} wide>
       <div className="mb-3 flex flex-wrap items-end gap-2">
@@ -108,7 +108,7 @@ function LedgerModal({ partner, onClose }) {
       </div>
       <div className="mb-3 grid grid-cols-2 gap-2 sm:grid-cols-3">
         <Stat label="سلف مستحقة" value={<span className="text-base">{fmt(dbt.loans)}</span>} tone="amber" /><Stat label="ثمن بقر مستحق" value={<span className="text-base">{fmt(dbt.purchases)}</span>} tone="amber" /><Stat label="مصروفات/مبالغ دفعها" value={<span className="text-base">{fmt(dbt.other)}</span>} tone="amber" />
-        <Stat label="إجمالي المستحق له" value={<span className="text-base">{fmt(dbt.total)}</span>} tone="red" /><Stat label="إجمالي ما سحبه" value={<span className="text-base">{fmt(dbt.withdrawals)}</span>} /><Stat label="توزيعات أرباح استلمها" value={<span className="text-base">{fmt(dbt.distributions)}</span>} /></div>
+        <Stat label="إجمالي المستحق له" value={<span className="text-base">{fmt(dbt.total)}</span>} tone="red" /><Stat label="سحوبات وسلف أخذها" value={<span className="text-base">{fmt(dbt.withdrawals + dbt.advances)}</span>} /><Stat label="توزيعات أرباح استلمها" value={<span className="text-base">{fmt(dbt.distributions)}</span>} /></div>
       <Table columns={[{ key: 'date', label: 'التاريخ' }, { key: 'what', label: 'البيان' }, { key: 'credit', label: 'له', render: (r) => (r.credit ? <span className="num font-bold text-emerald-700">{fmt(r.credit)}</span> : '—') }, { key: 'debit', label: 'عليه', render: (r) => (r.debit ? <span className="num font-bold text-rose-600">{fmt(r.debit)}</span> : '—') }, { key: 'balance', label: 'الرصيد', render: (r) => <b className="num">{fmt(r.balance)}</b> }]} rows={rows} empty={<Empty title="لا توجد حركات" />}
         footer={<tr><td colSpan={2} className="px-3 py-2">الإجمالي</td><td className="px-3 py-2 num">{fmt(report.totals.credit)}</td><td className="px-3 py-2 num">{fmt(report.totals.debit)}</td><td className="px-3 py-2 num">{fmt(L.closing)}</td></tr>} />
       <div className="mt-3 text-xs text-slate-500"><b>له</b> = يزيد مستحق الشريك على المزرعة (قرض، ثمن حيوان دفعه، مصروف دفعه، مبلغ زائد، حصة أرباح). <b>عليه</b> = ما سُدِّد له أو سحبه أو وُزِّع عليه. الرصيد الموجب = مستحق للشريك.</div>
@@ -134,7 +134,7 @@ export function Partners() {
         { key: 'ln', label: 'سلف مستحقة', render: (r) => <span className="num">{fmt(partnerDebt(r.id, ctx.led).loans)}</span> },
         { key: 'pu', label: 'ثمن بقر مستحق', render: (r) => <span className="num">{fmt(partnerDebt(r.id, ctx.led).purchases)}</span> },
         { key: 'ot', label: 'مصروفات/مبالغ دفعها', render: (r) => <span className="num">{fmt(partnerDebt(r.id, ctx.led).other)}</span> },
-        { key: 'wd', label: 'سحوبات (إجمالي)', render: (r) => <span className="num">{fmt(partnerDebt(r.id, ctx.led).withdrawals)}</span> },
+        { key: 'wd', label: 'سحوبات وسلف أخذها', render: (r) => { const x = partnerDebt(r.id, ctx.led); return <span className="num">{fmt(x.withdrawals + x.advances)}</span>; } },
         { key: 'tt', label: 'إجمالي المستحق له', render: (r) => <b className="num text-rose-600">{fmt(partnerDebt(r.id, ctx.led).total)}</b> },
         { key: 'ownershipPct', label: 'الملكية', render: (r) => `${r.ownershipPct}%` }, { key: 'profitSharePct', label: 'الأرباح', render: (r) => `${r.profitSharePct}%` }, { key: 'status', label: 'الحالة', hideMobile: true, render: (r) => <Badge tone={r.status === 'active' ? 'green' : 'gray'}>{r.status === 'active' ? 'نشط' : 'غير نشط'}</Badge> }]}
       rowActions={(r, ctx) => <>

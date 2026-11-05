@@ -133,7 +133,7 @@ export function loanPosition(loan, repayments = [], asOf = todayISO()) {
 const LEDGER_SIGN = {
   opening_balance: 1, capital_contribution: 1, additional_capital: 1, loan_given: 1, loan_principal_repayment: -1,
   interest_accrued: 1, interest_paid: -1, expense_paid_personally: 1, reimbursement: -1, withdrawal: -1,
-  profit_allocation: 1, profit_distribution: -1, adjustment: 1, animal_purchase_paid: 1, animal_purchase_repaid: -1,
+  profit_allocation: 1, profit_distribution: -1, adjustment: 1, animal_purchase_paid: 1, animal_purchase_repaid: -1, partner_advance: -1,
 };
 export const LEDGER_TYPES = Object.keys(LEDGER_SIGN);
 export function partnerLedger(partnerId, entries, { currency, from, to } = {}) {
@@ -170,8 +170,9 @@ export function partnerDebt(partnerId, ledger = [], currency = 'SYP') {
   const sum = (...ts) => round2(mine.filter((e) => ts.includes(e.type)).reduce((s, e) => s + n(e.amount), 0));
   const loans = round2(sum('loan_given') - sum('loan_principal_repayment'));
   const purchases = round2(sum('animal_purchase_paid') - sum('animal_purchase_repaid'));
-  const other = round2(sum('expense_paid_personally', 'additional_capital', 'capital_contribution') - sum('reimbursement'));
-  return { loans, purchases, other, total: round2(loans + purchases + other), loansTotal: sum('loan_given'), purchasesTotal: sum('animal_purchase_paid'), withdrawals: sum('withdrawal'), distributions: sum('profit_distribution') };
+  const advances = sum('partner_advance'); // سلف أخذها الشريك من المزرعة: تُخصم مما نستحقه له
+  const other = round2(sum('expense_paid_personally', 'additional_capital', 'capital_contribution') - sum('reimbursement') - advances);
+  return { loans, purchases, other, total: round2(loans + purchases + other), loansTotal: sum('loan_given'), purchasesTotal: sum('animal_purchase_paid'), withdrawals: sum('withdrawal'), advances, distributions: sum('profit_distribution') };
 }
 /** يوزّع مبلغ السداد على الأبواب الثلاثة: الافتراضي سلف ← ثمن بقر ← مصروفات/مبالغ؛ أو ثمن البقر أولاً؛ أو باب واحد فقط. يرمي خطأ لو المبلغ أكبر من المستحق. */
 export function planPartnerRepayment({ loans, purchases, other = 0, amount, order = 'loans_first' }) {

@@ -1,6 +1,6 @@
 // Multi-record financial operations. Each is ONE atomic batch so related records can never get out of sync.
 import { serverTimestamp } from 'firebase/firestore';
-import { allExpenseCategories, allAnimalCategories } from '../lib/constants';
+import { allExpenseCategories, allAnimalCategories, PARTNER_EXPENSE_CATS } from '../lib/constants';
 import { planPartnerRepayment, allocateToLoans, loanPosition, partnerDebt, cashBalances } from '../lib/finance';
 import { commit, nextNumber, newId } from './db';
 import { validateDelivery, validateExpensePayment, partnerFundedExpenseEntry, makeTransfer, allocateProfit } from '../lib/finance';
@@ -31,13 +31,17 @@ export const addCustomerPayment = (user, p) => commit(user, paymentOps(user, p))
 
 export async function addExpense(user, e) { return commit(user, [{ col: 'expenses', data: e }]); }
 /** Pay an expense. source 'account' -> cash movement. source 'partner' -> partner ledger entry only (expense stays single). */
-export async function payExpense(user, expense, payments, p) {
+export async function payExpense(user, expense, payments, p, loanCtx = {}) {
   const v = validateExpensePayment(expense, payments, p.amount);
   if (!v.ok) throw new Error(`المبلغ يتجاوز المتبقي (${v.outstanding})`);
+  const isPartnerCat = !!PARTNER_EXPENSE_CATS[expense.category];
+  if (isPartnerCat && p.source !== 'account') throw new Error('هذا النوع يُدفع من صندوق المزرعة');
+  if (isPartnerCat && !expense.partnerAccountId) throw new Error('اربط هذا المصروف بشريك أولاً (زر «ربط مصروفات الشركاء بحساباتهم»)');
   const payId = newId('expensePayments');
   const ops = [{ col: 'expensePayments', id: payId, data: { expenseId: expense.id, date: p.date, amount: p.amount, currency: expense.currency, source: p.source, accountId: p.accountId || null, partnerId: p.partnerId || null } }];
   if (p.source === 'account') ops.push({ col: 'cashTransactions', data: { date: p.date, type: 'expense_payment', direction: 'out', amount: p.amount, currency: expense.currency, accountId: p.accountId, expenseId: expense.id, expensePaymentId: payId, supplierId: expense.supplierId || null, description: expense.description || '' } });
   if (p.source === 'partner') ops.push({ col: 'partnerCapitalTransactions', data: partnerFundedExpenseEntry(expense, { id: payId, partnerId: p.partnerId, date: p.date, amount: p.amount }) });
+  if (isPartnerCat) ops.push(...partnerEntriesForPayment({ expense, partnerId: expense.partnerAccountId, payId, date: p.date, amount: Number(p.amount), loans: loanCtx.loans || [], repayments: loanCtx.repayments || [] }));
   return commit(user, ops);
 }
 export const reimbursePartner = (user, p) => commit(user, [
@@ -118,11 +122,14 @@ export async function sellAnimal(user, s) {
 /** Expense + (optional) payment in ONE atomic batch. Expense is recorded once; payment goes to a cashbox OR to a partner's ledger. */
 export async function addExpenseWithPayment(user, e, p = {}) {
   const id = newId('expenses');
+  const isPartnerCat = !!PARTNER_EXPENSE_CATS[e.category];
+  if (isPartnerCat && !e.partnerAccountId) throw new Error('اختر الشريك الذي يُقيَّد في حسابه (سحب / سلفة / سداد قرض)');
   const ops = [{ col: 'expenses', id, data: e }];
   if (p.payNow && p.payNow !== 'no') {
     const amount = p.payNow === 'full' ? Number(e.amount) : Number(p.paidAmount);
     if (!(amount > 0) || amount > Number(e.amount)) throw new Error('مبلغ الدفع يجب أن يكون أكبر من صفر ولا يتجاوز قيمة المصروف');
     const source = p.source || 'account';
+    if (isPartnerCat && source !== 'account') throw new Error('هذا النوع يُدفع من صندوق المزرعة (يُقيَّد في حساب الشريك تلقائياً)');
     if (source === 'account' && !p.accountId) throw new Error('اختر الصندوق');
     if (source === 'partner' && !p.partnerId) throw new Error('اختر الشريك');
     const pdate = p.payDate || e.date; // تاريخ الدفع الفعلي (افتراضياً = تاريخ المصروف)
@@ -130,6 +137,7 @@ export async function addExpenseWithPayment(user, e, p = {}) {
     ops.push({ col: 'expensePayments', id: payId, data: { expenseId: id, date: pdate, amount, currency: e.currency, source, accountId: source === 'account' ? p.accountId : null, partnerId: source === 'partner' ? p.partnerId : null } });
     if (source === 'account') ops.push({ col: 'cashTransactions', data: { date: pdate, type: 'expense_payment', direction: 'out', amount, currency: e.currency, accountId: p.accountId, expenseId: id, expensePaymentId: payId, description: e.description || '' } });
     else ops.push({ col: 'partnerCapitalTransactions', data: partnerFundedExpenseEntry({ ...e, id }, { id: payId, partnerId: p.partnerId, date: pdate, amount }) });
+    if (isPartnerCat) ops.push(...partnerEntriesForPayment({ expense: { ...e, id }, partnerId: e.partnerAccountId, payId, date: pdate, amount, loans: p.loans || [], repayments: p.repayments || [] }));
   }
   return commit(user, ops);
 }
@@ -137,6 +145,24 @@ export async function addExpenseWithPayment(user, e, p = {}) {
 // ───────────── تعديل / إلغاء الدفعات (مع مزامنة حركة الصندوق المرتبطة) ─────────────
 const r2 = (x) => Math.round((Number(x) || 0) * 100) / 100;
 const voidData = (reason) => ({ voided: true, voidReason: reason || '', voidedAt: serverTimestamp() });
+
+/** أثر دفعة مصروف «يخص شريكاً» (سحب / سلفة أخذها / سداد أصل قرض) في حسابه:
+ *  سحب ← قيد «سحب» · سلفة ← قيد «سلفة أخذها الشريك» · سداد قرض ← يُوزَّع على قروضه الأقدم فالأحدث (يُنقص أصل القرض) + قيد «سداد أصل القرض».
+ *  لا يُنشئ حركة صندوق (حركة الدفع نفسها هي التي أخرجت المال). */
+export function partnerEntriesForPayment({ expense, partnerId, payId, date, amount, loans = [], repayments = [] }) {
+  const type = PARTNER_EXPENSE_CATS[expense.category]; if (!type) return [];
+  if (!partnerId) throw new Error('اختر الشريك الذي يُقيَّد في حسابه');
+  const currency = expense.currency || 'SYP';
+  const base = { partnerId, date, currency, expenseId: expense.id, expensePaymentId: payId, note: expense.description || '' };
+  if (type !== 'loan_principal_repayment') return [{ col: 'partnerCapitalTransactions', data: { ...base, type, amount: Number(amount) } }];
+  const { parts, unallocated } = allocateToLoans(partnerId, loans, repayments, amount, currency);
+  if (!parts.length) throw new Error('لا توجد سلفة (قرض) قائمة لهذا الشريك لسداد أصلها');
+  if (unallocated > 0.005) throw new Error(`المبلغ أكبر من السلف القائمة لهذا الشريك (المتبقي ${r2(Number(amount) - unallocated)})`);
+  return parts.flatMap(({ loan, principal }) => [
+    { col: 'partnerLoanRepayments', data: { loanId: loan.id, partnerId, date, principalAmount: principal, interestAmount: 0, currency, expenseId: expense.id, expensePaymentId: payId } },
+    { col: 'partnerCapitalTransactions', data: { ...base, type, amount: principal, loanId: loan.id } },
+  ]);
+}
 
 /** دفعة عميل: تعديل التاريخ/المبلغ/الطريقة/الملاحظة — وحركة الصندوق المرتبطة تتحدّث معها. */
 export async function updateCustomerPayment(user, pay, cashTxs, d) {
@@ -156,7 +182,7 @@ export async function voidCustomerPayment(user, pay, cashTxs, reason) {
   return commit(user, ops, 'void');
 }
 /** تعديل مصروف. التاريخ: الدفعات اللي بنفس تاريخه تتبعه. المبلغ: لو المصروف مدفوع بالكامل بدفعة واحدة، الدفعة (وحركة الصندوق/دفتر الشريك) تتبع المبلغ الجديد. */
-export async function updateExpenseSynced(user, expense, data, { pays = [], cash = [], ledger = [] } = {}) {
+export async function updateExpenseSynced(user, expense, data, { pays = [], cash = [], ledger = [], reps = [] } = {}) {
   const ops = [{ col: 'expenses', id: expense.id, merge: true, data }];
   const mine = pays.filter((p) => p.expenseId === expense.id && !p.voided);
   const dateChanged = !!data.date && data.date !== expense.date;
@@ -173,7 +199,10 @@ export async function updateExpenseSynced(user, expense, data, { pays = [], cash
       const cp = { ...patch }; if (data.description !== undefined && data.description !== expense.description) cp.description = data.description;
       if (Object.keys(cp).length) ops.push({ col: 'cashTransactions', id: t.id, merge: true, data: cp });
     }
-    if (Object.keys(patch).length) for (const t of ledger.filter((t) => t.expensePaymentId === p.id && !t.voided)) ops.push({ col: 'partnerCapitalTransactions', id: t.id, merge: true, data: patch });
+    const linkedLed = ledger.filter((t) => t.expensePaymentId === p.id && !t.voided);
+    if (syncSingle && linkedLed.length > 1) throw new Error('هذا المصروف موزّع على أكثر من قرض: لتغيير مبلغه ألغِ الدفعة وأعد تسجيلها.');
+    if (Object.keys(patch).length) for (const t of linkedLed) ops.push({ col: 'partnerCapitalTransactions', id: t.id, merge: true, data: patch });
+    if (Object.keys(patch).length) for (const t of reps.filter((t) => t.expensePaymentId === p.id && !t.voided)) ops.push({ col: 'partnerLoanRepayments', id: t.id, merge: true, data: { ...(patch.date ? { date: patch.date } : {}), ...(patch.amount !== undefined ? { principalAmount: patch.amount } : {}) } });
   }
   return commit(user, ops, 'update');
 }
@@ -183,15 +212,19 @@ export async function updateExpensePayment(user, expense, allPays, pay, links, d
   if (!(amount > 0)) throw new Error('أدخل مبلغاً أكبر من صفر');
   const others = allPays.filter((p) => p.expenseId === expense.id && !p.voided && p.id !== pay.id).reduce((a, p) => a + Number(p.amount || 0), 0);
   if (amount + others > Number(expense.amount) + 1e-9) throw new Error(`المبلغ يتجاوز قيمة المصروف (الحد الأقصى ${r2(Number(expense.amount) - others)})`);
+  const linkedLed = (links.ledger || []).filter((t) => t.expensePaymentId === pay.id && !t.voided); const linkedReps = (links.reps || []).filter((t) => t.expensePaymentId === pay.id && !t.voided);
+  if (Number(pay.amount) !== amount && (linkedLed.length > 1 || linkedReps.length > 1)) throw new Error('هذه الدفعة موزّعة على أكثر من قرض: لتغيير مبلغها ألغِها وأعد تسجيلها.');
   const ops = [{ col: 'expensePayments', id: pay.id, merge: true, data: { date: d.date, amount } }];
   (links.cash || []).filter((t) => t.expensePaymentId === pay.id && !t.voided).forEach((t) => ops.push({ col: 'cashTransactions', id: t.id, merge: true, data: { date: d.date, amount } }));
-  (links.ledger || []).filter((t) => t.expensePaymentId === pay.id && !t.voided).forEach((t) => ops.push({ col: 'partnerCapitalTransactions', id: t.id, merge: true, data: { date: d.date, amount } }));
+  linkedLed.forEach((t) => ops.push({ col: 'partnerCapitalTransactions', id: t.id, merge: true, data: { date: d.date, amount } }));
+  linkedReps.forEach((t) => ops.push({ col: 'partnerLoanRepayments', id: t.id, merge: true, data: { date: d.date, principalAmount: amount } }));
   return commit(user, ops, 'update');
 }
 export async function voidExpensePayment(user, pay, links, reason) {
   const ops = [{ col: 'expensePayments', id: pay.id, merge: true, data: voidData(reason), action: 'void' }];
   (links.cash || []).filter((t) => t.expensePaymentId === pay.id && !t.voided).forEach((t) => ops.push({ col: 'cashTransactions', id: t.id, merge: true, data: voidData(reason), action: 'void' }));
   (links.ledger || []).filter((t) => t.expensePaymentId === pay.id && !t.voided).forEach((t) => ops.push({ col: 'partnerCapitalTransactions', id: t.id, merge: true, data: voidData(reason), action: 'void' }));
+  (links.reps || []).filter((t) => t.expensePaymentId === pay.id && !t.voided).forEach((t) => ops.push({ col: 'partnerLoanRepayments', id: t.id, merge: true, data: voidData(reason), action: 'void' }));
   return commit(user, ops, 'void');
 }
 
@@ -207,12 +240,13 @@ export async function updateDelivery(user, agreement, deliveries, del, d) {
 export const voidDelivery = (user, del, reason) => commit(user, [{ col: 'milkDeliveries', id: del.id, merge: true, data: voidData(reason), action: 'void' }], 'void');
 
 // ───────────── إلغاء متسلسل: إلغاء سجل يلغي كل ما يتبعه (حتى لا يبقى أثره في الصندوق أو الأرباح) ─────────────
-export async function voidExpenseCascade(user, expense, { pays = [], cash = [], ledger = [] } = {}, reason) {
+export async function voidExpenseCascade(user, expense, { pays = [], cash = [], ledger = [], reps = [] } = {}, reason) {
   const ops = [{ col: 'expenses', id: expense.id, merge: true, data: voidData(reason), action: 'void' }];
   for (const p of pays.filter((p) => p.expenseId === expense.id && !p.voided)) {
     ops.push({ col: 'expensePayments', id: p.id, merge: true, data: voidData(reason), action: 'void' });
     cash.filter((t) => t.expensePaymentId === p.id && !t.voided).forEach((t) => ops.push({ col: 'cashTransactions', id: t.id, merge: true, data: voidData(reason), action: 'void' }));
     ledger.filter((t) => t.expensePaymentId === p.id && !t.voided).forEach((t) => ops.push({ col: 'partnerCapitalTransactions', id: t.id, merge: true, data: voidData(reason), action: 'void' }));
+    reps.filter((t) => t.expensePaymentId === p.id && !t.voided).forEach((t) => ops.push({ col: 'partnerLoanRepayments', id: t.id, merge: true, data: voidData(reason), action: 'void' }));
   }
   return commit(user, ops, 'void');
 }
@@ -350,5 +384,25 @@ export async function switchExchangeDiffToPartner(user, items, { events = [], le
   }
   if (!groups.length) throw new Error('لا يوجد ما يُحوَّل (ربما حُوِّل من قبل)');
   for (let i = 0; i < groups.length; i += 50) await commit(user, groups.slice(i, i + 50).flat(), 'update');
+  return groups.length;
+}
+
+/** ربط مصروفات قديمة (سحب شريك / سلف شريك / سداد أصل قرض) بحسابات الشركاء: يُقيَّد أثر كل دفعة موجودة في حساب الشريك الذي تختاره. */
+export async function linkExpensesToPartners(user, items, { pays = [], ledger = [], loans = [], repayments = [] } = {}) {
+  const groups = []; const reps = [...repayments];
+  for (const { expense, partnerId } of items) {
+    if (!PARTNER_EXPENSE_CATS[expense.category] || expense.voided || expense.partnerAccountId) continue;
+    if (!partnerId) throw new Error('اختر الشريك لكل مصروف');
+    if (ledger.some((e) => !e.voided && e.expenseId === expense.id && Object.values(PARTNER_EXPENSE_CATS).includes(e.type))) continue;
+    const ops = [{ col: 'expenses', id: expense.id, merge: true, data: { partnerAccountId: partnerId } }];
+    for (const pay of pays.filter((p) => p.expenseId === expense.id && !p.voided && (p.source || 'account') === 'account').sort((a, b) => a.date.localeCompare(b.date))) {
+      const e = partnerEntriesForPayment({ expense, partnerId, payId: pay.id, date: pay.date, amount: pay.amount, loans, repayments: reps });
+      e.filter((x) => x.col === 'partnerLoanRepayments').forEach((x) => reps.push({ ...x.data, id: `tmp-${reps.length}` })); // يحسب التوزيع التالي بعد هذا
+      ops.push(...e);
+    }
+    groups.push(ops);
+  }
+  if (!groups.length) throw new Error('لا يوجد ما يُربط (ربما رُبط من قبل)');
+  for (let i = 0; i < groups.length; i += 40) await commit(user, groups.slice(i, i + 40).flat(), 'update');
   return groups.length;
 }
