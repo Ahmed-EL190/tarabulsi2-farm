@@ -36,8 +36,9 @@ export default function AnimalSale({ onClose, preselectId = null }) {
   };
   const status = !animal ? '' : herd[animal.id]?.active ? (animal.healthStatus === 'sick' ? 'مريض' : 'نشط') : ({ sale: 'مباع', death: 'نافق', transfer_out: 'منقول', exchange_out: 'مبادَل' }[herd[animal.id]?.last] || 'خارج القطيع');
   const calving = prof?.daysToCalving == null ? '' : prof.daysToCalving >= 0 ? `بعد ${prof.daysToCalving} يوم (${prof.expectedBirthDate})` : `متأخرة ${-prof.daysToCalving} يوم`;
+  const mom = animal ? animals.find((a) => a.id === animal.motherId) : null; const kids = animal ? animals.filter((a) => a.motherId === animal.id) : [];
   const details = animal ? [
-    ['الرقم', animal.tag], ['الاسم', animal.name], ['الفئة', animalCatLabel(animal.category)], ['الجنس', animal.sex === 'F' ? 'أنثى' : animal.sex === 'M' ? 'ذكر' : ''], ['السلالة', animal.breed],
+    ['الرقم', animal.tag], ['الاسم', animal.name], ['الفئة', animalCatLabel(animal.category)], ['الأم', mom ? `${mom.tag}${mom.name ? ' — ' + mom.name : ''}` : (animal.motherTag || '')], ['الصغار (معها)', kids.map((k) => `${k.tag}${k.name ? ' — ' + k.name : ''}`).join('، ')], ['الجنس', animal.sex === 'F' ? 'أنثى' : animal.sex === 'M' ? 'ذكر' : ''], ['السلالة', animal.breed],
     ['المصدر', SRC[animal.origin]], ['جهة الشراء', animal.sellerName], ['تاريخ الشراء', animal.acquisitionDate], ['سعر الشراء', animal.acquisitionCost ? `${fmt(animal.acquisitionCost)} ${animal.currency || ''}` : ''],
     ['العمر (شهر)', prof.ageMonths], ['الحمل', { yes: 'حامل', no: 'غير حامل', na: 'لا ينطبق' }[animal.pregnant]], ['موعد الولادة', calving], ['حليب عند الشراء (لتر/يوم)', animal.milkAtPurchase], ['الحالة', status],
     ['إجمالي الحليب (لتر)', fmt(prof.milkTotal)], ['أيام الإنتاج', prof.milkDays], ['متوسط اليوم (لتر)', fmt(prof.milkAvg)], ['تكلفة العلاج', fmt(prof.treatmentCost)],

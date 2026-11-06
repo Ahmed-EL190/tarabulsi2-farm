@@ -24,6 +24,7 @@ const Inventory = page(() => import('./pages/modules'), 'Inventory');
 const Users = page(() => import('./pages/Admin'), 'Users');
 const Settings = page(() => import('./pages/Admin'), 'Settings');
 const Audit = page(() => import('./pages/Admin'), 'Audit');
+const Integrity = page(() => import('./pages/Integrity'));
 
 function Gate() {
   const { user, loading } = useAuth();
@@ -50,6 +51,7 @@ function Gate() {
         <Route path="users" element={<Users />} />
         <Route path="settings" element={<Settings />} />
         <Route path="audit" element={<Audit />} />
+        <Route path="integrity" element={<Integrity />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Route>
     </Routes>

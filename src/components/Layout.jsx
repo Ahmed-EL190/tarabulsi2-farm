@@ -1,7 +1,7 @@
 import { NavLink, Outlet } from 'react-router-dom';
 import { useState, useEffect, Suspense } from 'react';
 import { Download, Share } from 'lucide-react';
-import { Home, Milk, ShoppingCart, Users, Landmark, Receipt, UserRoundCog, HandCoins, Scale, PawPrint, Baby, ArrowLeftRight, Wheat, FileText, ShieldCheck, Settings, History, Bell, Menu, Globe, UserCircle2, LogOut } from 'lucide-react';
+import { Home, Milk, ShoppingCart, Users, Landmark, Receipt, UserRoundCog, HandCoins, Scale, PawPrint, Baby, ArrowLeftRight, Wheat, FileText, ShieldCheck, ClipboardCheck, Settings, History, Bell, Menu, Globe, UserCircle2, LogOut } from 'lucide-react';
 import { CowLogo } from './ui';
 import { useAuth } from '../data/auth';
 import { useSettings, useStoreStatus } from '../data/db';
@@ -11,7 +11,7 @@ export const NAV = [
   ['/customers', 'العملاء والديون المدينة', Users], ['/cash', 'الصندوق والحسابات', Landmark], ['/expenses', 'المصروفات', Receipt],
   ['/partners', 'الشركاء', UserRoundCog], ['/loans', 'قروض وتمويل الشركاء', HandCoins], ['/settlements', 'تسويات وتوزيع الأرباح', Scale],
   ['/animals', 'المواشي والعجول', PawPrint], ['/animal-events', 'المواليد والوفيات', Baby], ['/exchange', 'تبادل ونقل المواشي', ArrowLeftRight],
-  ['/inventory', 'الأعلاف والمخزون', Wheat], ['/reports', 'التقارير', FileText], ['/users', 'المستخدمون والصلاحيات', ShieldCheck],
+  ['/inventory', 'الأعلاف والمخزون', Wheat], ['/reports', 'التقارير', FileText], ['/integrity', 'فحص سلامة البيانات', ClipboardCheck], ['/users', 'المستخدمون والصلاحيات', ShieldCheck],
   ['/settings', 'الإعدادات', Settings], ['/audit', 'سجل التدقيق', History],
 ];
 const ROLE_AR = { admin: 'مدير النظام', accountant: 'محاسب', data_entry: 'مدخل بيانات', viewer: 'مشاهد' };

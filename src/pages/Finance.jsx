@@ -4,7 +4,7 @@ import CrudPage, { FormModal } from '../components/CrudPage';
 import ExportButtons from '../components/ExportButtons';
 import { Card, Table, Badge, Empty, PageHeader, Stat, Modal, money, fmt, today } from '../components/ui';
 import { useCol, useSettings, useCustomLists, saveRecord, commit, voidRecord } from '../data/db';
-import { payExpense, addExpenseWithPayment, updateExpenseSynced, updateExpensePayment, voidExpensePayment, updateCustomerPayment, voidCustomerPayment, addCustomCategory, transferCash, addOtherIncome, createLoan, repayLoan, finalizeSettlement, partnerMovement, voidExpenseCascade, voidSettlement, voidDistribution, voidCashTransactions, linkExpensesToPartners } from '../data/ops';
+import { payExpense, addExpenseWithPayment, updateExpenseSynced, updateExpensePayment, voidExpensePayment, updateCustomerPayment, voidCustomerPayment, addCustomCategory, transferCash, addOtherIncome, createLoan, repayLoan, finalizeSettlement, partnerMovement, voidExpenseCascade, voidSettlement, voidDistribution, voidCashTransactions, linkExpensesToPartners, updateLedgerEntry, voidLedgerEntry } from '../data/ops';
 import { useAuth } from '../data/auth';
 import { cashBalances, cashFlowSummary, expensePosition, loanPosition, partnerLedger, profitAndLoss, allocateProfit, validateShares, customerPosition, animalPLInputs, findOrphanCash, round2, sumByCurrency } from '../lib/finance';
 import { CURRENCIES, METHODS, allExpenseCategories, NEW_CAT, catLabel, CASH_AR, PARTNER_EXPENSE_CATS } from '../lib/constants';
@@ -17,7 +17,7 @@ export function Cash() {
   const { user, can } = useAuth();
   const [tab, setTab] = useState('bal'); const [m, setM] = useState(null); const [ed, setEd] = useState(null);
   const allTx = useCol('cashTransactions').rows; const custPays = useCol('customerPayments').rows; const expPays = useCol('expensePayments').rows; const expenses = useCol('expenses').rows; const ledgerRows = useCol('partnerCapitalTransactions').rows;
-  const animalsAll = useCol('animals').rows; const eventsAll = useCol('animalEvents').rows; const [orphOpen, setOrphOpen] = useState(false); const [orphErr, setOrphErr] = useState('');
+  const animalsAll = useCol('animals').rows; const eventsAll = useCol('animalEvents').rows; const loansAll = useCol('partnerLoans').rows; const repsAll = useCol('partnerLoanRepayments').rows; const [orphOpen, setOrphOpen] = useState(false); const [orphErr, setOrphErr] = useState('');
   const orphans = findOrphanCash({ cash: allTx, expensePays: expPays, expenses, custPays, animals: animalsAll, ledger: ledgerRows, events: eventsAll });
   const accounts = useCol('cashAccounts').rows.filter((a) => !a.voided); const txs = useCol('cashTransactions').rows.filter((t) => !t.voided);
   const bal = cashBalances(txs); const [from, setFrom] = useState(''); const [to, setTo] = useState(''); const [c, setC] = useState('SYP'); const s = useSettings();
@@ -25,19 +25,29 @@ export function Cash() {
   const shown = txs.filter((t) => (!from || t.date >= from) && (!to || t.date <= to)).sort((a, b) => b.date.localeCompare(a.date));
   const acctName = (id) => accounts.find((a) => a.id === id)?.name || '—';
   // أي حركات يمكن تعديلها هنا؟ دفعات العملاء ودفعات المصروفات (تتحدّث مع أصلها)، والإيراد الآخر والرصيد الافتتاحي. الباقي يُعدَّل من صفحته.
-  const kindOf = (t) => (t.customerPaymentId ? 'cust' : t.expensePaymentId ? 'exp' : (['other_income', 'opening_balance'].includes(t.type) || (t.type === 'capital_contribution' && t.description === 'إيداع رأس المال الابتدائي')) ? 'direct' : null);
-  const links = { cash: allTx, ledger: ledgerRows };
-  const edFields = { cust: [{ name: 'date', label: 'التاريخ', type: 'date', required: true }, { name: 'amount', label: 'المبلغ', type: 'number', required: true, positive: true }, { name: 'method', label: 'طريقة الدفع', type: 'select', options: METHODS, default: 'cash' }, { name: 'note', label: 'ملاحظة', type: 'text' }],
-    exp: [{ name: 'date', label: 'تاريخ الدفع', type: 'date', required: true }, { name: 'amount', label: 'المبلغ', type: 'number', required: true, positive: true }],
-    direct: [{ name: 'date', label: 'التاريخ', type: 'date', required: true }, { name: 'amount', label: 'المبلغ', type: 'number', required: true, positive: true }, { name: 'description', label: 'البيان', type: 'text' }] };
-  const edDefaults = (t) => { const k = kindOf(t); if (k === 'cust') { const p = custPays.find((x) => x.id === t.customerPaymentId); return { date: t.date, amount: t.amount, method: p?.method || t.method || 'cash', note: p?.note || t.description || '' }; } return { date: t.date, amount: t.amount, description: t.description || '' }; };
+  const kindOf = (t) => (t.customerPaymentId ? 'cust' : t.expensePaymentId ? 'exp' : t.ledgerEntryId ? 'partner' : t.type === 'loan_received' && t.loanId ? 'loan' : (['other_income', 'opening_balance'].includes(t.type)) ? 'direct' : null);
+  const links = { cash: allTx, ledger: ledgerRows, reps: repsAll };
+  const lctx = { ledger: ledgerRows, cash: allTx, loans: loansAll, reps: repsAll, events: eventsAll, animals: animalsAll, pays: expPays, expenses };
+  const D = { name: 'date', label: 'التاريخ', type: 'date', required: true }, AM = { name: 'amount', label: 'المبلغ', type: 'number', required: true, positive: true }, AC = { ...acct, label: 'الصندوق / الحساب', required: true };
+  // كل بيانات الحركة قابلة للتعديل (التاريخ، المبلغ، الصندوق، الطريقة، البيان) وتتزامن معها السجلات المرتبطة
+  const edFields = { cust: [D, AM, AC, { name: 'method', label: 'طريقة الدفع', type: 'select', options: METHODS, default: 'cash' }, { name: 'note', label: 'ملاحظة / بيان', type: 'text' }],
+    exp: [D, AM, AC, { name: 'note', label: 'ملاحظة / بيان', type: 'text' }], direct: [D, AM, AC, { name: 'description', label: 'البيان', type: 'text' }],
+    partner: [D, AM, AC, { name: 'note', label: 'ملاحظة / بيان', type: 'text' }], loan: [D, AM, AC, { name: 'note', label: 'ملاحظة / بيان', type: 'text' }] };
+  const ledgerOf = (t) => (t.type === 'loan_received' ? ledgerRows.find((e) => !e.voided && e.type === 'loan_given' && e.loanId === t.loanId) : ledgerRows.find((e) => e.id === t.ledgerEntryId));
+  const edDefaults = (t) => { const k = kindOf(t); const base = { date: t.date, amount: t.amount, accountId: t.accountId || '' };
+    if (k === 'cust') { const p = custPays.find((x) => x.id === t.customerPaymentId); return { ...base, method: p?.method || t.method || 'cash', note: p?.note || t.description || '' }; }
+    if (k === 'exp') { const p = expPays.find((x) => x.id === t.expensePaymentId); return { ...base, note: p?.note || t.description || '' }; }
+    if (k === 'partner' || k === 'loan') return { ...base, note: ledgerOf(t)?.note || t.description || '' };
+    return { ...base, description: t.description || '' }; };
   const saveEd = async (d) => { const t = ed; const k = kindOf(t);
-    if (k === 'cust') { const p = custPays.find((x) => x.id === t.customerPaymentId); if (!p) throw new Error('الدفعة الأصلية غير موجودة'); return updateCustomerPayment(user, p, allTx, { ...d, accountId: p.accountId || t.accountId }); }
+    if (k === 'cust') { const p = custPays.find((x) => x.id === t.customerPaymentId); if (!p) throw new Error('الدفعة الأصلية غير موجودة'); return updateCustomerPayment(user, p, allTx, d); }
     if (k === 'exp') { const p = expPays.find((x) => x.id === t.expensePaymentId); const e = expenses.find((x) => x.id === (p?.expenseId || t.expenseId)); if (!p || !e) throw new Error('الدفعة الأصلية غير موجودة'); return updateExpensePayment(user, e, expPays, p, links, d); }
-    return saveRecord(user, 'cashTransactions', { date: d.date, amount: Number(d.amount), description: d.description || '' }, t.id); };
+    if (k === 'partner' || k === 'loan') { const le = ledgerOf(t); if (!le) throw new Error('قيد الشريك المرتبط غير موجود'); return updateLedgerEntry(user, le, lctx, d); }
+    return saveRecord(user, 'cashTransactions', { date: d.date, amount: Number(d.amount), accountId: d.accountId, description: d.description || '' }, t.id); };
   const voidEd = async (t) => { const why = prompt('سبب الإلغاء؟ (تبقى الحركة في سجل التدقيق)'); if (!why) return; const k = kindOf(t);
     if (k === 'cust') { const p = custPays.find((x) => x.id === t.customerPaymentId); return p ? voidCustomerPayment(user, p, allTx, why) : voidRecord(user, 'cashTransactions', t.id, why); }
     if (k === 'exp') { const p = expPays.find((x) => x.id === t.expensePaymentId); return p ? voidExpensePayment(user, p, links, why) : voidRecord(user, 'cashTransactions', t.id, why); }
+    if (k === 'partner' || k === 'loan') { const le = ledgerOf(t); try { return le ? await voidLedgerEntry(user, le, lctx, why) : voidRecord(user, 'cashTransactions', t.id, why); } catch (e) { alert(e.message); return undefined; } }
     return voidRecord(user, 'cashTransactions', t.id, why); };
   const report = { farm: s.farmName, title: 'دفتر الصندوق', from, to, currency: c, columns: [{ key: 'date', label: 'التاريخ', type: 'date' }, { key: 'typeAr', label: 'النوع' }, { key: 'acct', label: 'الحساب' }, { key: 'description', label: 'البيان' }, { key: 'cur', label: 'العملة' }, { key: 'inAmt', label: 'وارد', type: 'money' }, { key: 'outAmt', label: 'صادر', type: 'money' }],
     rows: shown.filter((t) => t.currency === c).map((t) => ({ ...t, typeAr: CASH_AR[t.type] || t.type, acct: acctName(t.accountId), cur: t.currency, inAmt: t.direction === 'in' ? Number(t.amount) : 0, outAmt: t.direction === 'out' ? Number(t.amount) : 0 })) };
@@ -97,8 +107,8 @@ function ExpensePaymentsModal({ expense, onClose }) {
         { key: '_a', label: '', render: (p) => <div className="flex gap-1">
           {can('update') && <button className="rounded p-1.5 hover:bg-slate-100" title="تعديل" onClick={() => setEd(p)}><Pencil size={15} /></button>}
           {can('voidFinancial') && <button className="rounded p-1.5 text-rose-600 hover:bg-rose-50" title="إلغاء الدفعة" onClick={async () => { const why = prompt('سبب إلغاء الدفعة؟'); if (why) await voidExpensePayment(user, p, links, why); }}><Ban size={15} /></button>}</div> }]} />
-      {ed && <FormModal open onClose={() => setEd(null)} title="تعديل دفعة مصروف" fields={[{ name: 'date', label: 'تاريخ الدفع', type: 'date', required: true }, { name: 'amount', label: 'المبلغ', type: 'number', required: true, positive: true }]}
-        defaults={{ date: ed.date, amount: ed.amount }} onSubmit={(d) => updateExpensePayment(user, expense, pays, ed, links, d)} />}
+      {ed && <FormModal open onClose={() => setEd(null)} title="تعديل دفعة مصروف" fields={[{ name: 'date', label: 'تاريخ الدفع', type: 'date', required: true }, { name: 'amount', label: 'المبلغ', type: 'number', required: true, positive: true }, ed.source === 'partner' ? { name: 'partnerId', label: 'الشريك الذي دفع', type: 'rel', col: 'partners', required: true } : { ...acct, label: 'الصندوق الذي دُفع منه', required: true }, { name: 'note', label: 'ملاحظة / بيان', type: 'text' }]}
+        defaults={{ date: ed.date, amount: ed.amount, accountId: ed.accountId || '', partnerId: ed.partnerId || '', note: ed.note || '' }} onSubmit={(d) => updateExpensePayment(user, expense, pays, ed, links, d)} />}
     </Modal>
   );
 }

@@ -1,12 +1,12 @@
 import { useMemo, useState } from 'react';
-import { FileText, BookOpen, Info, Landmark, HandCoins } from 'lucide-react';
+import { FileText, BookOpen, Info, Landmark, HandCoins, Pencil, Ban } from 'lucide-react';
 import CrudPage, { FormModal } from '../components/CrudPage';
 import ExportButtons from '../components/ExportButtons';
 import AnimalSale from '../components/AnimalSale';
 import ExchangeModal from '../components/ExchangeModal';
 import { Card, Stat, Table, Badge, Modal, Empty, PageHeader, Avatar, money, fmt, today } from '../components/ui';
 import { useCol, useSettings, useCustomLists, createAnimal, saveRecord, commit, newId } from '../data/db';
-import { recordAnimalEvent, partnerMovement, voidAnimalCascade, voidAnimalEventCascade, animalPurchasePayment, linkPurchasesToPartner, voidInitialCapital, repayPartner, switchExchangeDiffToPartner, voidCashTransactions, addCustomCategory } from '../data/ops';
+import { recordAnimalEvent, partnerMovement, voidAnimalCascade, voidAnimalEventCascade, animalPurchasePayment, linkPurchasesToPartner, voidInitialCapital, repayPartner, switchExchangeDiffToPartner, voidCashTransactions, addCustomCategory, updateLedgerEntry, voidLedgerEntry } from '../data/ops';
 import { useAuth } from '../data/auth';
 import { customerPosition, customerStatement, partnerLedger, herdState, animalExchange, validateNewAnimal, animalProfile, partnerDebt, cashBalances, round2, LEDGER_TYPES } from '../lib/finance';
 import { CURRENCIES, LEDGER_AR, allAnimalCategories, animalCatLabel, NEW_CAT } from '../lib/constants';
@@ -19,18 +19,45 @@ const acct = { name: 'accountId', label: 'الصندوق / الحساب', type: 
 const SHIFTS = [['morning', 'صباحاً'], ['evening', 'مساءً'], ['all', 'على مدار اليوم (إجمالي)']];
 const SHIFT_TONE = { morning: 'amber', evening: 'blue', all: 'green' };
 export function Production() {
-  // لا نخلط «صباح/مساء» مع «إجمالي اليوم» في نفس اليوم كي لا يتكرر الإنتاج
-  const check = (d, prod, selfId) => { const same = prod.filter((p) => !p.voided && p.date === d.date && p.id !== selfId); if (same.some((p) => (p.shift === 'all') !== (d.shift === 'all'))) throw new Error('هذا اليوم مسجّل فيه إنتاج بنظام مختلف: إمّا «صباحاً/مساءً» أو «على مدار اليوم». لا تخلط الاثنين في نفس اليوم حتى لا يتكرر الإنتاج.'); };
-  return <CrudPage title="إنتاج الحليب" subtitle="3 اختيارات: صباحاً · مساءً · على مدار اليوم (إجمالي اليوم دفعة واحدة)" col="milkProduction" searchKeys={['date', 'group', 'notes']}
-    filters={[{ key: 'shift', label: 'الوردية', options: SHIFTS, allLabel: 'الكل' }]}
-    fields={[{ name: 'date', label: 'التاريخ', type: 'date', required: true }, { name: 'shift', label: 'الوردية', type: 'select', required: true, options: SHIFTS, default: 'morning' },
-      { name: 'animalId', label: 'البقرة (اختياري — لإنتاج كل بقرة)', type: 'rel', col: 'animals', optLabel: animalOpt }, { name: 'group', label: 'المجموعة (إن لم تُحدَّد بقرة)', type: 'text' }, { name: 'liters', label: 'الكمية (لتر)', type: 'number', required: true, positive: true }, { name: 'notes', label: 'ملاحظات', type: 'textarea' }]}
-    useCtx={() => ({ animals: useCol('animals').rows, prod: useCol('milkProduction').rows })}
-    create={(u, d, { animals, prod }) => { check(d, prod); return saveRecord(u, 'milkProduction', { ...d, animalTag: animals.find((a) => a.id === d.animalId)?.tag || '', recordedBy: u.name || u.email }); }}
-    update={(u, d, edit, { animals, prod }) => { check(d, prod, edit.id); return saveRecord(u, 'milkProduction', { ...d, animalTag: animals.find((a) => a.id === d.animalId)?.tag || '' }, edit.id); }}
-    summary={(rows) => { const sum = (f) => rows.filter(f).reduce((a, r) => a + Number(r.liters), 0); const m = today().slice(0, 7); const td = (r) => r.date === today();
-      return <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-5"><Stat label="إنتاج اليوم (الإجمالي)" value={`${fmt(sum(td))} لتر`} tone="green" /><Stat label="صباحاً اليوم" value={fmt(sum((r) => td(r) && r.shift === 'morning'))} tone="amber" /><Stat label="مساءً اليوم" value={fmt(sum((r) => td(r) && r.shift === 'evening'))} tone="blue" /><Stat label="على مدار اليوم" value={fmt(sum((r) => td(r) && r.shift === 'all'))} /><Stat label="إنتاج الشهر" value={`${fmt(sum((r) => r.date.startsWith(m)))} لتر`} /></div>; }}
-    cols={() => [{ key: 'date', label: 'التاريخ' }, { key: 'shift', label: 'الوردية', render: (r) => <Badge tone={SHIFT_TONE[r.shift] || 'gray'}>{(SHIFTS.find(([k]) => k === r.shift) || [])[1] || r.shift}</Badge> }, { key: 'group', label: 'البقرة/المجموعة', render: (r) => r.animalTag || r.group || '—' }, { key: 'liters', label: 'اللترات', render: (r) => <b className="num">{fmt(r.liters)}</b> }, { key: 'recordedBy', label: 'سجّله' }, { key: 'notes', label: 'ملاحظات' }]} />;
+  const { user } = useAuth(); const prodRows = useCol('milkProduction').rows; const animalRows = useCol('animals').rows; const [both, setBoth] = useState(false);
+  const shiftAr = (k) => (SHIFTS.find(([x]) => x === k) || [])[1] || k;
+  // لا نخلط «صباح/مساء» مع «إجمالي اليوم» في نفس اليوم كي لا يتكرر الإنتاج، ولا نكرّر نفس الوردية لنفس البقرة/المجموعة
+  const check = (d, prod, selfId) => {
+    const same = prod.filter((p) => !p.voided && p.date === d.date && p.id !== selfId);
+    if (same.some((p) => (p.shift === 'all') !== (d.shift === 'all'))) throw new Error('هذا اليوم مسجّل فيه إنتاج بنظام مختلف: إمّا «صباحاً/مساءً» أو «على مدار اليوم». لا تخلط الاثنين في نفس اليوم حتى لا يتكرر الإنتاج.');
+    const scope = (x) => `${x.animalId || ''}|${x.group || ''}`;
+    if (same.some((p) => p.shift === d.shift && scope(p) === scope(d))) throw new Error(`يوجد تسجيل «${shiftAr(d.shift)}» لنفس اليوم ونفس البقرة/المجموعة. عدّله بدل تكراره.`);
+  };
+  const tagOf = (id) => animalRows.find((a) => a.id === id)?.tag || '';
+  /** صباح + مساء في إدخال واحد: يُنشئ سجلين (لكل وردية كميتها). */
+  const addBoth = async (d) => {
+    const m = Number(d.morning || 0), e = Number(d.evening || 0);
+    if (!(m > 0) && !(e > 0)) throw new Error('أدخل كمية الصباح أو المساء (أو الاثنين)');
+    const ops = [];
+    for (const [shift, liters] of [['morning', m], ['evening', e]]) {
+      if (!(liters > 0)) continue;
+      const rec = { date: d.date, shift, animalId: d.animalId || '', group: d.group || '', liters, notes: d.notes || '', animalTag: tagOf(d.animalId), recordedBy: user.name || user.email };
+      check(rec, prodRows); ops.push({ col: 'milkProduction', data: rec });
+    }
+    await commit(user, ops);
+  };
+  return (<>
+    <CrudPage title="إنتاج الحليب" subtitle="3 اختيارات: صباحاً · مساءً · على مدار اليوم — أو أدخل الصباح والمساء معاً مرة واحدة" col="milkProduction" searchKeys={['date', 'group', 'notes']}
+      extraHeader={<button className="btn btn-primary" onClick={() => setBoth(true)}>إدخال صباح + مساء معاً</button>}
+      filters={[{ key: 'shift', label: 'الوردية', options: SHIFTS, allLabel: 'الكل' }]}
+      fields={[{ name: 'date', label: 'التاريخ', type: 'date', required: true }, { name: 'shift', label: 'الوردية', type: 'select', required: true, options: SHIFTS, default: 'morning' },
+        { name: 'animalId', label: 'البقرة (اختياري — لإنتاج كل بقرة)', type: 'rel', col: 'animals', optLabel: animalOpt }, { name: 'group', label: 'المجموعة (إن لم تُحدَّد بقرة)', type: 'text' }, { name: 'liters', label: 'الكمية (لتر)', type: 'number', required: true, positive: true }, { name: 'notes', label: 'ملاحظات', type: 'textarea' }]}
+      useCtx={() => ({ animals: useCol('animals').rows, prod: useCol('milkProduction').rows })}
+      create={(u, d, { animals, prod }) => { check(d, prod); return saveRecord(u, 'milkProduction', { ...d, animalTag: animals.find((a) => a.id === d.animalId)?.tag || '', recordedBy: u.name || u.email }); }}
+      update={(u, d, edit, { animals, prod }) => { check(d, prod, edit.id); return saveRecord(u, 'milkProduction', { ...d, animalTag: animals.find((a) => a.id === d.animalId)?.tag || '' }, edit.id); }}
+      summary={(rows) => { const sum = (f) => rows.filter(f).reduce((a, r) => a + Number(r.liters), 0); const m = today().slice(0, 7); const td = (r) => r.date === today();
+        return <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-5"><Stat label="إنتاج اليوم (الإجمالي)" value={`${fmt(sum(td))} لتر`} tone="green" /><Stat label="صباحاً اليوم" value={fmt(sum((r) => td(r) && r.shift === 'morning'))} tone="amber" /><Stat label="مساءً اليوم" value={fmt(sum((r) => td(r) && r.shift === 'evening'))} tone="blue" /><Stat label="على مدار اليوم" value={fmt(sum((r) => td(r) && r.shift === 'all'))} /><Stat label="إنتاج الشهر" value={`${fmt(sum((r) => r.date.startsWith(m)))} لتر`} /></div>; }}
+      cols={() => [{ key: 'date', label: 'التاريخ' }, { key: 'shift', label: 'الوردية', render: (r) => <Badge tone={SHIFT_TONE[r.shift] || 'gray'}>{shiftAr(r.shift)}</Badge> }, { key: 'group', label: 'البقرة/المجموعة', render: (r) => r.animalTag || r.group || '—' }, { key: 'liters', label: 'اللترات', render: (r) => <b className="num">{fmt(r.liters)}</b> }, { key: 'recordedBy', label: 'سجّله' }, { key: 'notes', label: 'ملاحظات' }]} />
+    {both && <FormModal open onClose={() => setBoth(false)} title="إدخال إنتاج اليوم: صباح + مساء" submitLabel="حفظ الاثنين"
+      fields={[{ name: 'date', label: 'التاريخ', type: 'date', required: true }, { name: 'morning', label: 'كمية الصباح (لتر)', type: 'number', min: 0 }, { name: 'evening', label: 'كمية المساء (لتر)', type: 'number', min: 0 },
+        { name: 'animalId', label: 'البقرة (اختياري)', type: 'rel', col: 'animals', optLabel: animalOpt }, { name: 'group', label: 'المجموعة (إن لم تُحدَّد بقرة)', type: 'text' }, { name: 'notes', label: 'ملاحظات', type: 'textarea' }]}
+      defaults={{ date: today(), morning: '', evening: '' }} onSubmit={addBoth} />}
+  </>);
 }
 
 // ───────── العملاء
@@ -91,6 +118,10 @@ export function Customers() {
 function LedgerModal({ partner, onClose }) {
   const { user, can } = useAuth(); const s = useSettings();
   const entries = useCol('partnerCapitalTransactions').rows; const animals = useCol('animals').rows;
+  const cashAll = useCol('cashTransactions').rows; const loansAll = useCol('partnerLoans').rows; const repsAll = useCol('partnerLoanRepayments').rows; const evAll = useCol('animalEvents').rows; const payAll = useCol('expensePayments').rows; const expAll = useCol('expenses').rows;
+  const [edE, setEdE] = useState(null); const [err, setErr] = useState('');
+  const lctx = { ledger: entries, cash: cashAll, loans: loansAll, reps: repsAll, events: evAll, animals, pays: payAll, expenses: expAll };
+  const hasCash = (e) => !!e.expensePaymentId || cashAll.some((x) => !x.voided && (x.ledgerEntryId === e.id || (e.type === 'loan_given' && x.loanId === e.loanId && x.type === 'loan_received')));
   const dbt = partnerDebt(partner.id, entries);
   const [c, setC] = useState('SYP'); const [type, setType] = useState(''); const [from, setFrom] = useState(''); const [to, setTo] = useState(''); const [mv, setMv] = useState(false);
   const L = partnerLedger(partner.id, type ? entries.filter((e) => e.type === type) : entries, { currency: c, from, to });
@@ -109,9 +140,14 @@ function LedgerModal({ partner, onClose }) {
       <div className="mb-3 grid grid-cols-2 gap-2 sm:grid-cols-3">
         <Stat label="سلف مستحقة" value={<span className="text-base">{fmt(dbt.loans)}</span>} tone="amber" /><Stat label="ثمن بقر مستحق" value={<span className="text-base">{fmt(dbt.purchases)}</span>} tone="amber" /><Stat label="مصروفات/مبالغ دفعها" value={<span className="text-base">{fmt(dbt.other)}</span>} tone="amber" />
         <Stat label="إجمالي المستحق له" value={<span className="text-base">{fmt(dbt.total)}</span>} tone="red" /><Stat label="سحوبات وسلف أخذها" value={<span className="text-base">{fmt(dbt.withdrawals + dbt.advances)}</span>} /><Stat label="توزيعات أرباح استلمها" value={<span className="text-base">{fmt(dbt.distributions)}</span>} /></div>
-      <Table columns={[{ key: 'date', label: 'التاريخ' }, { key: 'what', label: 'البيان' }, { key: 'credit', label: 'له', render: (r) => (r.credit ? <span className="num font-bold text-emerald-700">{fmt(r.credit)}</span> : '—') }, { key: 'debit', label: 'عليه', render: (r) => (r.debit ? <span className="num font-bold text-rose-600">{fmt(r.debit)}</span> : '—') }, { key: 'balance', label: 'الرصيد', render: (r) => <b className="num">{fmt(r.balance)}</b> }]} rows={rows} empty={<Empty title="لا توجد حركات" />}
+      <Table columns={[{ key: 'date', label: 'التاريخ' }, { key: 'what', label: 'البيان' }, { key: 'credit', label: 'له', render: (r) => (r.credit ? <span className="num font-bold text-emerald-700">{fmt(r.credit)}</span> : '—') }, { key: 'debit', label: 'عليه', render: (r) => (r.debit ? <span className="num font-bold text-rose-600">{fmt(r.debit)}</span> : '—') }, { key: 'balance', label: 'الرصيد', render: (r) => <b className="num">{fmt(r.balance)}</b> },
+        { key: '_a', label: '', render: (r) => (r.type === 'profit_allocation' ? <span className="text-xs text-slate-400" title="ألغِ التسوية من صفحة التسويات">من التسويات</span> : <div className="flex gap-1">
+          {can('update') && <button className="rounded p-1.5 hover:bg-slate-100" title="تعديل البند" onClick={() => { setErr(''); setEdE(r); }}><Pencil size={15} /></button>}
+          {can('voidFinancial') && <button className="rounded p-1.5 text-rose-600 hover:bg-rose-50" title="حذف البند" onClick={async () => { const why = prompt('سبب حذف هذا البند؟ (يُلغى معه ما يرتبط به)'); if (!why) return; try { await voidLedgerEntry(user, r, lctx, why); } catch (e) { alert(e.message); } }}><Ban size={15} /></button>}</div>) }]} rows={rows} empty={<Empty title="لا توجد حركات" />}
         footer={<tr><td colSpan={2} className="px-3 py-2">الإجمالي</td><td className="px-3 py-2 num">{fmt(report.totals.credit)}</td><td className="px-3 py-2 num">{fmt(report.totals.debit)}</td><td className="px-3 py-2 num">{fmt(L.closing)}</td></tr>} />
       <div className="mt-3 text-xs text-slate-500"><b>له</b> = يزيد مستحق الشريك على المزرعة (قرض، ثمن حيوان دفعه، مصروف دفعه، مبلغ زائد، حصة أرباح). <b>عليه</b> = ما سُدِّد له أو سحبه أو وُزِّع عليه. الرصيد الموجب = مستحق للشريك.</div>
+      {edE && <FormModal open onClose={() => setEdE(null)} title={`تعديل بند: ${LEDGER_AR[edE.type] || edE.type}`} fields={[{ name: 'date', label: 'التاريخ', type: 'date', required: true }, { name: 'amount', label: 'المبلغ', type: 'number', required: true, positive: true }, ...(hasCash(edE) ? [{ ...acct, label: 'الصندوق (للحركة النقدية المرتبطة)' }] : []), { name: 'note', label: 'البيان / ملاحظة', type: 'text' }]}
+        defaults={{ date: edE.date, amount: edE.amount, accountId: cashAll.find((x) => !x.voided && x.ledgerEntryId === edE.id)?.accountId || '', note: edE.note || '' }} onSubmit={(d) => updateLedgerEntry(user, edE, lctx, d)} />}
       <FormModal open={mv} onClose={() => setMv(false)} title="حركة شريك (مع قيد الصندوق المرتبط)" submitLabel="تسجيل"
         fields={[{ name: 'type', label: 'النوع', type: 'select', required: true, options: [['additional_capital', 'دفع مبلغاً زائداً للمزرعة (يدخل الصندوق ويُقيَّد له)'], ['withdrawal', 'سحب (يخرج من الصندوق)'], ['profit_distribution', 'توزيع أرباح نقدي']] }, { name: 'date', label: 'التاريخ', type: 'date', required: true }, { name: 'amount', label: 'المبلغ', type: 'number', required: true, positive: true }, cur, { ...acct, required: true }, { name: 'note', label: 'ملاحظة', type: 'text' }]}
         defaults={{ type: 'additional_capital', date: today(), amount: '', currency: 'SYP', accountId: '', note: '' }} onSubmit={(d) => partnerMovement(user, { ...d, partnerId: partner.id })} />
@@ -167,7 +203,7 @@ const checkCalf = (d, motherTag, animals) => {
 /** تسجيل صغير لأمّ (جديدة أو موجودة): الحيوان + حدث الولادة/الشراء + حركة الصندوق إن كان له سعر. */
 async function addCalf(u, motherId, mother, d, { origin, date, currency, pay }) {
   const tag = String(d.calfTag).trim(); const cost = Number(d.calfCost || 0);
-  const cid = await createAnimal(u, { tag, name: d.calfName || '', category: d.calfCategory || 'heifer_calf', sex: d.calfSex || 'F', breed: d.calfBreed || mother.breed || '', origin, sellerName: mother.sellerName || '', birthDate: d.calfBirthDate || '', acquisitionDate: date, acquisitionCost: cost, currency, healthStatus: d.calfHealth || 'healthy', motherId, pregnant: 'na', withMother: true, photo: d.calfPhoto || '' });
+  const cid = await createAnimal(u, { motherTag: mother.tag, tag, name: d.calfName || '', category: d.calfCategory || 'heifer_calf', sex: d.calfSex || 'F', breed: d.calfBreed || mother.breed || '', origin, sellerName: mother.sellerName || '', birthDate: d.calfBirthDate || '', acquisitionDate: date, acquisitionCost: cost, currency, healthStatus: d.calfHealth || 'healthy', motherId, pregnant: 'na', withMother: true, photo: d.calfPhoto || '' });
   const p = origin === 'purchase' ? animalPurchasePayment({ ...pay, cost, date, currency, tag, animalId: cid }) : { cash: null, ledger: null, extra: {} };
   await recordAnimalEvent(u, { animalId: cid, tag, type: origin, date, value: cost, currency, motherId, ...p.extra }, p.cash, p.ledger);
 }
@@ -268,7 +304,9 @@ export function Animals() {
       }}
       summary={(rows, ctx) => { const h = herdState(ctx.events, ctx.animals); const soon = rows.filter((r) => h[r.id]?.active && (animalProfile(r, ctx).daysToCalving ?? 999) <= 30 && animalProfile(r, ctx).daysToCalving !== null).length;
         return <div className="grid grid-cols-2 gap-3 sm:grid-cols-5"><Stat label="القطيع النشط" value={Object.values(h).filter((x) => x.active).length} /><Stat label="مريض" value={rows.filter((r) => h[r.id]?.active && r.healthStatus === 'sick').length} tone="red" /><Stat label="ولادات خلال 30 يوم" value={soon} tone="amber" /><Stat label="إجمالي السجلات" value={rows.length} /><Stat label="خرجت من القطيع" value={Object.values(h).filter((x) => !x.active).length} /></div>; }}
-      cols={(ctx) => { const h = herdState(ctx.events, ctx.animals); return [{ key: 'photo', label: 'الصورة', render: (r) => <Avatar src={r.photo} size={44} alt={r.tag} onClick={r.photo ? () => setView(r) : undefined} /> }, { key: 'tag', label: 'الرقم' }, { key: 'name', label: 'الاسم' }, { key: 'category', label: 'الفئة', render: (r) => animalCatLabel(r.category) || '—' }, { key: 'sex', label: 'الجنس', hideMobile: true, render: (r) => (r.sex === 'F' ? 'أنثى' : 'ذكر') }, { key: 'breed', label: 'السلالة', hideMobile: true }, { key: 'acquisitionDate', label: 'الشراء', hideMobile: true },
+      cols={(ctx) => { const h = herdState(ctx.events, ctx.animals); return [{ key: 'photo', label: 'الصورة', render: (r) => <Avatar src={r.photo} size={44} alt={r.tag} onClick={r.photo ? () => setView(r) : undefined} /> }, { key: 'tag', label: 'الرقم' }, { key: 'name', label: 'الاسم' },
+        { key: 'fam', label: 'الأم / الصغار', render: (r) => { const mom = ctx.animals.find((a) => a.id === r.motherId); const kids = ctx.animals.filter((a) => !a.voided && a.motherId === r.id); return mom || kids.length ? <div className="text-xs leading-relaxed">{mom && <div>أمها: <b>{mom.tag}</b>{mom.name ? ` (${mom.name})` : ''}</div>}{kids.length > 0 && <div>معها صغير: <b>{kids.map((k) => k.tag).join('، ')}</b></div>}</div> : (r.motherTag ? <span className="text-xs">أمها: <b>{r.motherTag}</b></span> : '—'); } },
+        { key: 'category', label: 'الفئة', render: (r) => animalCatLabel(r.category) || '—' }, { key: 'sex', label: 'الجنس', hideMobile: true, render: (r) => (r.sex === 'F' ? 'أنثى' : 'ذكر') }, { key: 'breed', label: 'السلالة', hideMobile: true }, { key: 'acquisitionDate', label: 'الشراء', hideMobile: true },
         { key: 'cost', label: 'سعر الشراء', render: (r) => <span className="num">{r.acquisitionCost ? fmt(r.acquisitionCost) : '—'}</span> }, { key: 'age', label: 'العمر (شهر)', render: (r) => animalProfile(r, ctx).ageMonths ?? '—' },
         { key: 'mp', label: 'حليب عند الشراء', hideMobile: true, render: (r) => (r.milkAtPurchase ? <span className="num">{fmt(r.milkAtPurchase)} لتر/يوم</span> : '—') },
         { key: 'milk', label: 'حليب فعلي', render: (r) => { const p = animalProfile(r, ctx); return p.milkTotal ? <span className="num">{fmt(p.milkTotal)} <span className="text-xs text-slate-400">({fmt(p.milkAvg)}/يوم)</span></span> : '—'; } },

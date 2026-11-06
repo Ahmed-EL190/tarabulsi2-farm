@@ -214,9 +214,11 @@ export async function updateExpensePayment(user, expense, allPays, pay, links, d
   if (amount + others > Number(expense.amount) + 1e-9) throw new Error(`المبلغ يتجاوز قيمة المصروف (الحد الأقصى ${r2(Number(expense.amount) - others)})`);
   const linkedLed = (links.ledger || []).filter((t) => t.expensePaymentId === pay.id && !t.voided); const linkedReps = (links.reps || []).filter((t) => t.expensePaymentId === pay.id && !t.voided);
   if (Number(pay.amount) !== amount && (linkedLed.length > 1 || linkedReps.length > 1)) throw new Error('هذه الدفعة موزّعة على أكثر من قرض: لتغيير مبلغها ألغِها وأعد تسجيلها.');
-  const ops = [{ col: 'expensePayments', id: pay.id, merge: true, data: { date: d.date, amount } }];
-  (links.cash || []).filter((t) => t.expensePaymentId === pay.id && !t.voided).forEach((t) => ops.push({ col: 'cashTransactions', id: t.id, merge: true, data: { date: d.date, amount } }));
-  linkedLed.forEach((t) => ops.push({ col: 'partnerCapitalTransactions', id: t.id, merge: true, data: { date: d.date, amount } }));
+  // كل بيانات الدفعة قابلة للتعديل: التاريخ، المبلغ، الصندوق (للدفع من الصندوق)، الشريك (للدفع من شريك)، الملاحظة
+  const payPatch = { date: d.date, amount, ...(d.accountId && pay.source !== 'partner' ? { accountId: d.accountId } : {}), ...(d.partnerId && pay.source === 'partner' ? { partnerId: d.partnerId } : {}), ...(d.note !== undefined ? { note: d.note } : {}) };
+  const ops = [{ col: 'expensePayments', id: pay.id, merge: true, data: payPatch }];
+  (links.cash || []).filter((t) => t.expensePaymentId === pay.id && !t.voided).forEach((t) => ops.push({ col: 'cashTransactions', id: t.id, merge: true, data: { date: d.date, amount, ...(d.accountId ? { accountId: d.accountId } : {}), ...(d.note ? { description: d.note } : {}) } }));
+  linkedLed.forEach((t) => ops.push({ col: 'partnerCapitalTransactions', id: t.id, merge: true, data: { date: d.date, amount, ...(d.partnerId && pay.source === 'partner' ? { partnerId: d.partnerId } : {}) } }));
   linkedReps.forEach((t) => ops.push({ col: 'partnerLoanRepayments', id: t.id, merge: true, data: { date: d.date, principalAmount: amount } }));
   return commit(user, ops, 'update');
 }
@@ -405,4 +407,71 @@ export async function linkExpensesToPartners(user, items, { pays = [], ledger = 
   if (!groups.length) throw new Error('لا يوجد ما يُربط (ربما رُبط من قبل)');
   for (let i = 0; i < groups.length; i += 40) await commit(user, groups.slice(i, i + 40).flat(), 'update');
   return groups.length;
+}
+
+// ───────────── كشف حساب الشريك: تعديل / حذف أي بند مع مزامنة ما يرتبط به ─────────────
+const nn = (x) => Number(x) || 0;
+const findRep = (entry, reps) => reps.find((r) => !r.voided && !r.expensePaymentId && r.loanId === entry.loanId && r.date === entry.date && nn(entry.type === 'interest_paid' ? r.interestAmount : r.principalAmount) === nn(entry.amount));
+/** تعديل بند في كشف حساب شريك (التاريخ / المبلغ / الملاحظة / الصندوق) — وتتحدّث معه الحركات المرتبطة (صندوق، قرض، سداد، سعر حيوان، دفعة مصروف). */
+export async function updateLedgerEntry(user, entry, ctx = {}, d = {}) {
+  const amount = Number(d.amount); if (!(amount > 0)) throw new Error('أدخل مبلغاً أكبر من صفر');
+  const { cash = [], loans = [], reps = [], events = [], animals = [], pays = [], expenses = [], ledger = [] } = ctx;
+  const date = d.date || entry.date; const note = d.note !== undefined ? d.note : (entry.note || '');
+  if (entry.type === 'profit_allocation') throw new Error('هذا القيد ناتج عن تسوية أرباح: لا يُعدَّل هنا. ألغِ التسوية من «تسويات وتوزيع الأرباح» وأعد اعتمادها.');
+  if (entry.expensePaymentId) { // أصله دفعة مصروف: نعدّلها من مصدرها فتتزامن كل الحركات
+    const pay = pays.find((p) => p.id === entry.expensePaymentId); const exp = pay && expenses.find((e) => e.id === pay.expenseId);
+    if (!pay || !exp) throw new Error('الدفعة الأصلية للمصروف غير موجودة');
+    return updateExpensePayment(user, exp, pays, pay, { cash, ledger, reps }, { date, amount, accountId: d.accountId, note: d.note });
+  }
+  const ops = [{ col: 'partnerCapitalTransactions', id: entry.id, merge: true, data: { date, amount, note } }];
+  cash.filter((t) => !t.voided && t.ledgerEntryId === entry.id).forEach((t) => ops.push({ col: 'cashTransactions', id: t.id, merge: true, data: { date, amount, ...(d.accountId ? { accountId: d.accountId } : {}), ...(note ? { description: note } : {}) } }));
+  if (entry.type === 'loan_given' && entry.loanId) {
+    const repaid = reps.filter((r) => !r.voided && r.loanId === entry.loanId).reduce((s, r) => s + nn(r.principalAmount), 0);
+    if (amount + 1e-9 < repaid) throw new Error(`مبلغ القرض أقل مما سُدِّد منه (${r2(repaid)})`);
+    ops.push({ col: 'partnerLoans', id: entry.loanId, merge: true, data: { principal: amount, disbursementDate: date } });
+    cash.filter((t) => !t.voided && t.loanId === entry.loanId && t.type === 'loan_received').forEach((t) => ops.push({ col: 'cashTransactions', id: t.id, merge: true, data: { date, amount, ...(d.accountId ? { accountId: d.accountId } : {}) } }));
+  } else if (['loan_principal_repayment', 'interest_paid'].includes(entry.type) && entry.loanId) {
+    const rep = findRep(entry, reps);
+    if (rep) {
+      const isInt = entry.type === 'interest_paid'; const loan = loans.find((l) => l.id === entry.loanId);
+      if (!isInt && loan) { const others = reps.filter((r) => !r.voided && r.loanId === loan.id && r.id !== rep.id).reduce((s, r) => s + nn(r.principalAmount), 0); if (others + amount > nn(loan.principal) + 0.005) throw new Error(`السداد يتجاوز أصل القرض (المتاح ${r2(nn(loan.principal) - others)})`); }
+      const total = isInt ? nn(rep.principalAmount) + amount : amount + nn(rep.interestAmount);
+      ops.push({ col: 'partnerLoanRepayments', id: rep.id, merge: true, data: { date, ...(isInt ? { interestAmount: amount } : { principalAmount: amount }) } });
+      cash.filter((t) => !t.voided && t.loanId === entry.loanId && t.type === 'loan_repayment' && t.date === entry.date && nn(t.amount) === nn(rep.principalAmount) + nn(rep.interestAmount)).slice(0, 1).forEach((t) => ops.push({ col: 'cashTransactions', id: t.id, merge: true, data: { date, amount: total, ...(d.accountId ? { accountId: d.accountId } : {}) } }));
+    }
+  } else if (entry.type === 'animal_purchase_paid') {
+    const ev = events.find((e) => e.id === entry.eventId) || events.find((e) => !e.voided && e.type === 'purchase' && e.animalId === entry.animalId && e.date === entry.date && nn(e.value) === nn(entry.amount));
+    if (ev) { ops.push({ col: 'animalEvents', id: ev.id, merge: true, data: { value: amount, date } }); const an = animals.find((a) => a.id === ev.animalId); if (an && ev.type === 'purchase') ops.push({ col: 'animals', id: an.id, merge: true, data: { acquisitionCost: amount, ...(an.acquisitionDate === entry.date ? { acquisitionDate: date } : {}) } }); }
+  }
+  return commit(user, ops, 'update');
+}
+/** حذف (إلغاء) بند من كشف حساب الشريك مع كل ما يرتبط به. يبقى في سجل التدقيق. */
+export async function voidLedgerEntry(user, entry, ctx = {}, reason) {
+  const { cash = [], loans = [], reps = [], events = [], pays = [], ledger = [] } = ctx; const V = (col, id) => ({ col, id, merge: true, data: voidData(reason), action: 'void' });
+  if (entry.type === 'profit_allocation') throw new Error('قيد ناتج عن تسوية أرباح: ألغِ التسوية من صفحة التسويات.');
+  if (entry.expensePaymentId) { const pay = pays.find((p) => p.id === entry.expensePaymentId); if (!pay) throw new Error('الدفعة الأصلية غير موجودة'); return voidExpensePayment(user, pay, { cash, ledger, reps }, reason); }
+  const ops = [V('partnerCapitalTransactions', entry.id)]; const seen = new Set([entry.id]);
+  cash.filter((t) => !t.voided && t.ledgerEntryId === entry.id).forEach((t) => ops.push(V('cashTransactions', t.id)));
+  if (entry.type === 'loan_given' && entry.loanId) {
+    if (reps.some((r) => !r.voided && r.loanId === entry.loanId)) throw new Error('لهذا القرض سدادات: ألغِ سداداته أولاً.');
+    ops.push(V('partnerLoans', entry.loanId)); cash.filter((t) => !t.voided && t.loanId === entry.loanId && t.type === 'loan_received').forEach((t) => ops.push(V('cashTransactions', t.id)));
+  } else if (['loan_principal_repayment', 'interest_paid'].includes(entry.type) && entry.loanId) {
+    const rep = findRep(entry, reps);
+    if (rep) {
+      ops.push(V('partnerLoanRepayments', rep.id));
+      cash.filter((t) => !t.voided && t.loanId === entry.loanId && t.type === 'loan_repayment' && t.date === entry.date && nn(t.amount) === nn(rep.principalAmount) + nn(rep.interestAmount)).slice(0, 1).forEach((t) => ops.push(V('cashTransactions', t.id)));
+      const sib = ledger.find((e) => !e.voided && !seen.has(e.id) && e.loanId === entry.loanId && e.date === entry.date && ((entry.type === 'interest_paid' && e.type === 'loan_principal_repayment' && nn(e.amount) === nn(rep.principalAmount)) || (entry.type !== 'interest_paid' && e.type === 'interest_paid' && nn(e.amount) === nn(rep.interestAmount))));
+      if (sib) ops.push(V('partnerCapitalTransactions', sib.id));
+    }
+  } else if (entry.type === 'animal_purchase_paid') {
+    const ev = events.find((e) => e.id === entry.eventId); if (ev) ops.push({ col: 'animalEvents', id: ev.id, merge: true, data: { paidFrom: null, payerPartnerId: null } });
+  }
+  return commit(user, ops, 'void');
+}
+
+/** يطبّق إصلاحاً قادماً من فحص السلامة: عمليات إلغاء (void) أو دمج (merge) أو إنشاء. */
+export async function applyFixOps(user, ops, reason = 'تصحيح تلقائي من فحص سلامة البيانات') {
+  const list = ops.map((o) => (o.void ? { col: o.col, id: o.id, merge: true, data: voidData(reason), action: 'void' } : o));
+  for (let i = 0; i < list.length; i += 150) await commit(user, list.slice(i, i + 150), 'update');
+  return list.length;
 }
