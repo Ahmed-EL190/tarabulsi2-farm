@@ -85,3 +85,28 @@ describe('فحص سلامة البيانات', () => {
     expect(bad(auditData(d))).toEqual(expect.arrayContaining(['futureDates', 'nonPositive', 'unknownCategory', 'negCash']));
   });
 });
+
+describe('فروق التبادل لا تُحسب خطأً كعدم تطابق (الحالة اللي ظهرت في الصورة)', () => {
+  const withExchange = () => {
+    const d = healthy();
+    d.events.push({ id: 'XO', animalId: 'A9', tag: 'OLD', type: 'exchange_out', value: 800, currency: 'SYP', date: '2026-06-01', exchangeId: 'X1' }, { id: 'XI', animalId: 'A1', tag: 'C1', type: 'exchange_in', value: 1000, currency: 'SYP', date: '2026-06-01', exchangeId: 'X1', diffPaidBy: 'w' });
+    d.animals.push({ id: 'A9', tag: 'OLD' });
+    d.ledger.push({ id: 'LX', partnerId: 'w', type: 'animal_purchase_paid', amount: 200, currency: 'SYP', date: '2026-06-01', exchangeId: 'X1', animalId: 'A1', note: 'فرق تبادل OLD ↔ C1' });
+    return d;
+  };
+  it('قيد فرق تبادل (200) لا يسبب فرقاً في مطابقة الشراء، ويُطابَق مع (وارد − خارج)', () => {
+    const r = auditData(withExchange()); expect(r.summary.reconBad).toBe(0); expect(bad(r)).not.toContain('unmatchedPayable');
+    const ex = r.reconciliation.find((x) => x.label.includes('فروق تبادل')); expect(ex).toMatchObject({ a: 200, b: 200, ok: true });
+  });
+  it('فرق تبادل قيده يخالف (وارد − خارج) ← عدم تطابق حقيقي', () => {
+    const d = withExchange(); d.ledger.find((l) => l.id === 'LX').amount = 450; const r = auditData(d); expect(r.reconciliation.find((x) => x.label.includes('فروق تبادل')).ok).toBe(false);
+  });
+  it('قيد ثمن حيوان بلا شراء مقابل (25 مليون مثلاً) ← يظهر في القائمة مع زرار تعديل/حذف', () => {
+    const d = healthy(); d.ledger.push({ id: 'LZ', partnerId: 'w', type: 'animal_purchase_paid', amount: 25000000, currency: 'SYP', date: '2026-07-01', animalId: 'A1', note: 'شراء' });
+    const r = auditData(d); const c = find(r, 'unmatchedPayable'); expect(c.items.length).toBe(1); expect(c.items[0].resolve).toEqual({ kind: 'ledger-edit', id: 'LZ' }); expect(r.summary.reconBad).toBeGreaterThan(0);
+  });
+  it('قيد فرق تبادل لتبادل ملغى ← قيد يتيم مع إصلاح بالإلغاء', () => {
+    const d = withExchange(); d.events.forEach((e) => { if (e.exchangeId) e.voided = true; }); const r = auditData(d);
+    expect(find(r, 'orphanPayable').fix.ops).toEqual([{ col: 'partnerCapitalTransactions', id: 'LX', void: true }]);
+  });
+});

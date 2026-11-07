@@ -124,6 +124,9 @@ export async function addExpenseWithPayment(user, e, p = {}) {
   const id = newId('expenses');
   const isPartnerCat = !!PARTNER_EXPENSE_CATS[e.category];
   if (isPartnerCat && !e.partnerAccountId) throw new Error('اختر الشريك الذي يُقيَّد في حسابه (سحب / سلفة / سداد قرض)');
+  // سحب/سلفة/سداد قرض يخرج المال فوراً: يُدفع بالكامل من الصندوق ويُقيَّد في حساب الشريك حتى لو تُرك «غير مدفوع»
+  if (isPartnerCat && (!p.payNow || p.payNow === 'no')) p = { ...p, payNow: 'full', source: 'account' };
+  if (isPartnerCat && (p.source || 'account') === 'account' && !p.accountId) throw new Error('اختر الصندوق الذي يخرج منه المبلغ — هذا النوع يُدفع فوراً ويُقيَّد في حساب الشريك');
   const ops = [{ col: 'expenses', id, data: e }];
   if (p.payNow && p.payNow !== 'no') {
     const amount = p.payNow === 'full' ? Number(e.amount) : Number(p.paidAmount);
@@ -474,4 +477,46 @@ export async function applyFixOps(user, ops, reason = 'تصحيح تلقائي �
   const list = ops.map((o) => (o.void ? { col: o.col, id: o.id, merge: true, data: voidData(reason), action: 'void' } : o));
   for (let i = 0; i < list.length; i += 150) await commit(user, list.slice(i, i + 150), 'update');
   return list.length;
+}
+
+/** حفظ تعديل مصروف: يدعم تحويله/تعيين شريكه (سحب/سلفة/سداد قرض) فتُقيَّد دفعاته الموجودة في حساب الشريك، وتغيير الشريك ينقل قيوده. */
+export async function saveExpenseEdit(user, expense, d, ctx = {}) {
+  const { partnerAccountId, ...rest } = d; const cat = rest.category ?? expense.category; const isP = !!PARTNER_EXPENSE_CATS[cat];
+  const newPartner = isP ? (partnerAccountId || expense.partnerAccountId || '') : '';
+  if (isP && !newPartner) throw new Error('اختر الشريك الذي يُقيَّد في حسابه (سحب / سلفة / سداد قرض)');
+  const sync = { pays: ctx.pays || [], cash: ctx.cash || [], ledger: ctx.ledger || [], reps: ctx.reps || [] };
+  await updateExpenseSynced(user, expense, { ...rest, ...(isP ? { partnerAccountId: newPartner } : {}) }, sync);
+  if (!isP) return;
+  const types = Object.values(PARTNER_EXPENSE_CATS);
+  if (!expense.partnerAccountId) { // أول ربط لمصروف قائم: قيّد دفعاته في حساب الشريك
+    const hasEntries = sync.ledger.some((e) => !e.voided && e.expenseId === expense.id && types.includes(e.type));
+    if (!hasEntries) await linkExpensesToPartners(user, [{ expense: { ...expense, ...rest, partnerAccountId: undefined }, partnerId: newPartner }], { pays: sync.pays, ledger: sync.ledger, loans: ctx.loans || [], repayments: sync.reps });
+  } else if (expense.partnerAccountId !== newPartner) { // تغيير الشريك: تنتقل القيود وسدادات القروض لحسابه
+    const ops = [...sync.ledger.filter((e) => !e.voided && e.expenseId === expense.id && types.includes(e.type)).map((e) => ({ col: 'partnerCapitalTransactions', id: e.id, merge: true, data: { partnerId: newPartner } })),
+      ...sync.reps.filter((r) => !r.voided && r.expenseId === expense.id).map((r) => ({ col: 'partnerLoanRepayments', id: r.id, merge: true, data: { partnerId: newPartner } }))];
+    if (ops.length) await commit(user, ops, 'update');
+  }
+}
+
+/** نوع حركة الصندوق من حيث مصدرها (لتحديد كيف تُعدَّل): cust · exp · partner · loan · direct. */
+export const cashKind = (t) => (t.customerPaymentId ? 'cust' : t.expensePaymentId ? 'exp' : t.ledgerEntryId ? 'partner' : t.type === 'loan_received' && t.loanId ? 'loan' : 'direct');
+/** تعديل حركة صندوق بكل بياناتها مع مزامنة أصلها (دفعة عميل / دفعة مصروف / قيد شريك / قرض). */
+export async function updateCashMovement(user, t, d, ctx = {}) {
+  const { custPays = [], expPays = [], expenses = [], ledger = [], cash = [], loans = [], reps = [], events = [], animals = [] } = ctx; const k = cashKind(t);
+  if (k === 'cust') { const p = custPays.find((x) => x.id === t.customerPaymentId); if (!p) throw new Error('الدفعة الأصلية غير موجودة'); return updateCustomerPayment(user, p, cash, d); }
+  if (k === 'exp') { const p = expPays.find((x) => x.id === t.expensePaymentId); const e = expenses.find((x) => x.id === (p?.expenseId || t.expenseId)); if (!p || !e) throw new Error('الدفعة الأصلية غير موجودة'); return updateExpensePayment(user, e, expPays, p, { cash, ledger, reps }, d); }
+  if (k === 'partner' || k === 'loan') { const le = t.type === 'loan_received' ? ledger.find((e) => !e.voided && e.type === 'loan_given' && e.loanId === t.loanId) : ledger.find((e) => e.id === t.ledgerEntryId); if (!le) throw new Error('قيد الشريك المرتبط غير موجود'); return updateLedgerEntry(user, le, { ledger, cash, loans, reps, events, animals, pays: expPays, expenses }, d); }
+  const amount = Number(d.amount); if (!(amount > 0)) throw new Error('أدخل مبلغاً أكبر من صفر');
+  return commit(user, [{ col: 'cashTransactions', id: t.id, merge: true, data: { date: d.date, amount, accountId: d.accountId || t.accountId, description: d.description ?? d.note ?? t.description ?? '' } }], 'update');
+}
+/** بيع حيوان مسجّل بلا حركة صندوق ← إدخال المبلغ في الصندوق. */
+export const postAnimalSaleCash = async (user, ev, { accountId, date }) => { if (!accountId) throw new Error('اختر الصندوق'); return commit(user, [{ col: 'cashTransactions', data: { date: date || ev.date, type: 'animal_sale', direction: 'in', amount: Number(ev.value), currency: ev.currency || 'SYP', accountId, animalId: ev.animalId, description: `بيع ${ev.tag || ''}` } }], 'update'); };
+/** شراء حيوان بلا مصدر دفع ← من الصندوق (حركة خارجة) أو على حساب شريك. */
+export async function setPurchaseSource(user, ev, animal, { from, partnerId, accountId, ctx = {} }) {
+  if (from === 'account') {
+    if (!accountId) throw new Error('اختر الصندوق');
+    return commit(user, [{ col: 'cashTransactions', data: { date: ev.date, type: 'animal_purchase', direction: 'out', amount: Number(ev.value), currency: ev.currency || 'SYP', accountId, animalId: ev.animalId, description: `شراء ${ev.tag || animal?.tag || ''}` } }, { col: 'animalEvents', id: ev.id, merge: true, data: { paidFrom: 'account' } }], 'update');
+  }
+  if (!partnerId) throw new Error('اختر الشريك');
+  return linkPurchasesToPartner(user, [animal], { events: [ev], cash: ctx.cash || [], ledger: ctx.ledger || [] }, partnerId);
 }
