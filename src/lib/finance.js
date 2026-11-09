@@ -316,10 +316,13 @@ export function herdState(events, animals = null) {
   return state;
 }
 export const activeHerdCount = (events) => Object.values(herdState(events)).filter((s) => s.active).length;
+/** معرّف الحيوان في قاعدة البيانات من رقمه (نفس التحويل المستخدم عند الإنشاء): مسافات وشرطات مائلة وعلامات اقتباس تتحول إلى «_». */
+export const animalIdFromTag = (tag) => String(tag || '').trim().toLowerCase().replace(/[\s/\\'"]/g, '_');
+/** رقم حيوان جديد: لازم غير فارغ وغير مستخدم لحيوان قائم (الملغى/المحذوف لا يُحتسب، ويُقارَن بنفس تحويل المعرّف فلا يمرّ «A 1» ثم يفشل الحفظ بسبب «A_1»). */
 export function validateNewAnimal(tag, existing) {
-  const t = String(tag || '').trim().toLowerCase();
+  const t = animalIdFromTag(tag);
   if (!t) return { ok: false, reason: 'missing' };
-  return existing.some((a) => String(a.tag).trim().toLowerCase() === t && !a.voided) ? { ok: false, reason: 'duplicate' } : { ok: true };
+  return existing.some((a) => animalIdFromTag(a.tag) === t && !a.voided) ? { ok: false, reason: 'duplicate' } : { ok: true };
 }
 /** Exchange: old animal out at agreed value, new in at agreed value, cash difference settled. diff>0: farm pays. */
 export function animalExchange({ date, oldAnimalId, newAnimalId, oldValue, newValue, currency }) {

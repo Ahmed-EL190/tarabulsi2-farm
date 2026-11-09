@@ -48,7 +48,7 @@ export default function ExchangeModal({ onClose }) {
         ...(byPartner ? [{ col: 'partnerCapitalTransactions', data: { partnerId: payerId, date: f.date, type: 'animal_purchase_paid', amount: x.cashDifference, currency: f.currency, animalId: inId, exchangeId: exId, note: `فرق تبادل ${out.tag} ↔ ${inTag}` } }] : x.cash.map((c) => ({ col: 'cashTransactions', data: { ...c, accountId, exchangeId: exId, description: `فرق تبادل ${out.tag} ↔ ${inTag}` } }))),
       ]);
       onClose();
-    } catch (e) { setErr(e.message || 'تعذّر الحفظ'); }
+    } catch (e) { setErr(String(e.message).startsWith('DUPLICATE_TAG') ? `رقم الحيوان مسجّل مسبقاً لحيوان قائم${e.message.split(':')[1] ? ` (${e.message.split(':')[1]})` : ''}` : e.message || 'تعذّر الحفظ'); }
     setBusy(false);
   };
   const Sel = ({ k, opts }) => <select className="input" value={f[k]} onChange={(e) => set(k, e.target.value)}>{opts.map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select>;

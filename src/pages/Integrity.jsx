@@ -118,7 +118,7 @@ export default function Integrity() {
       {loading && <div className="mb-3 rounded-xl bg-amber-50 p-3 text-sm font-bold text-amber-800">جارٍ تحميل البيانات… نتيجة الفحص ستكتمل بعد التحميل.</div>}
       <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
         <Stat label="أخطاء" value={S.errors} tone={S.errors ? 'red' : 'green'} icon={XCircle} /><Stat label="تحذيرات" value={S.warnings} tone={S.warnings ? 'amber' : 'green'} icon={AlertTriangle} />
-        <Stat label="فحوص سليمة" value={`${S.ok} / ${S.total}`} tone="green" icon={CheckCircle2} /><Stat label="أرقام غير متطابقة" value={S.reconBad} tone={S.reconBad ? 'red' : 'green'} />
+        <Stat label="فحوص سليمة" value={`${S.ok} من ${S.total}`} tone="green" icon={CheckCircle2} /><Stat label="أرقام غير متطابقة" value={S.reconBad} tone={S.reconBad ? 'red' : 'green'} />
       </div>
       {!loading && !S.errors && !S.warnings && !S.reconBad && <div className="mb-4 rounded-xl bg-emerald-50 p-4 text-center text-sm font-extrabold text-emerald-800">كل الفحوص سليمة: المصروفات والمبيعات والصندوق والشركاء والمواشي مترابطة ومتطابقة.</div>}
       <Card title="مطابقة الأرقام (لازم تتساوى)" className="mb-4">

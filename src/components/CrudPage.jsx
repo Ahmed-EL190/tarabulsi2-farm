@@ -72,7 +72,7 @@ export function FormModal({ open, onClose, title, fields, defaults, onSubmit, su
   const [err, setErr] = useState('');
   const go = handleSubmit(async (d) => {
     setErr('');
-    try { await onSubmit(d); reset(); onClose(); } catch (e) { setErr(e.message === 'DUPLICATE_TAG' ? 'رقم الحيوان مسجّل مسبقاً' : e.message || 'تعذّر الحفظ'); }
+    try { await onSubmit(d); reset(); onClose(); } catch (e) { setErr(String(e.message).startsWith('DUPLICATE_TAG') ? `رقم الحيوان مسجّل مسبقاً لحيوان قائم${e.message.split(':')[1] ? ` (${e.message.split(':')[1]})` : ''} — اختر رقماً آخر أو ألغِ القديم أولاً` : e.message || 'تعذّر الحفظ'); }
   });
   return (
     <Modal open={open} onClose={onClose} title={title} wide={fields.length > 6}>

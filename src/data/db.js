@@ -1,4 +1,5 @@
 import { setCustomLists } from '../lib/constants';
+import { animalIdFromTag } from '../lib/finance';
 import { useEffect, useState, useCallback, useSyncExternalStore } from 'react';
 import { collection, doc, onSnapshot, writeBatch, runTransaction, serverTimestamp, query, orderBy, limit } from 'firebase/firestore';
 import { db } from '../lib/firebase';
@@ -103,11 +104,17 @@ export async function nextNumber(key, prefix) {
 /** Unique animal tag: document id = normalised tag, created in a transaction (prevents duplicates even under races). */
 export async function createAnimal(user, data) {
   const tag = String(data.tag).trim();
-  const id = tag.toLowerCase().replace(/[\s/\\'"]/g, '_');
-  const ref = doc(db, 'animals', id);
+  const base = animalIdFromTag(tag);
+  let id = base;
   await runTransaction(db, async (tx) => {
-    if ((await tx.get(ref)).exists()) throw new Error('DUPLICATE_TAG');
-    tx.set(ref, { ...data, tag, createdAt: serverTimestamp(), createdBy: user?.uid || null });
+    // رقم محذوف (ملغى) سابقاً يمكن إعادة استخدامه: يأخذ الحيوان الجديد معرّفاً جديداً ويبقى القديم في السجل بتاريخه
+    id = null;
+    for (let i = 1; i <= 30 && !id; i++) {
+      const cand = i === 1 ? base : `${base}__${i}`; const snap = await tx.get(doc(db, 'animals', cand));
+      if (!snap.exists()) id = cand; else if (!snap.data().voided) throw new Error(`DUPLICATE_TAG:${snap.data().tag || tag}`);
+    }
+    if (!id) throw new Error('تعذّر إنشاء معرّف للحيوان');
+    tx.set(doc(db, 'animals', id), { ...data, tag, createdAt: serverTimestamp(), createdBy: user?.uid || null });
     tx.set(doc(collection(db, 'auditLogs')), { at: serverTimestamp(), uid: user?.uid, userName: user?.name || user?.email || '', action: 'create', collection: 'animals', docId: id, summary: tag });
   });
   return id;
