@@ -6,7 +6,7 @@ import { Card, Table, Badge, Empty, PageHeader, Stat, Modal, money, fmt, today }
 import { useCol, useSettings, useCustomLists, saveRecord, commit, voidRecord } from '../data/db';
 import { payExpense, addExpenseWithPayment, updateExpenseSynced, updateExpensePayment, voidExpensePayment, updateCustomerPayment, voidCustomerPayment, addCustomCategory, transferCash, addOtherIncome, createLoan, repayLoan, finalizeSettlement, partnerMovement, voidExpenseCascade, voidSettlement, voidDistribution, voidCashTransactions, linkExpensesToPartners, updateLedgerEntry, voidLedgerEntry, saveExpenseEdit, updateCashMovement, cashKind } from '../data/ops';
 import { useAuth } from '../data/auth';
-import { cashBalances, cashFlowSummary, expensePosition, loanPosition, partnerLedger, profitAndLoss, allocateProfit, validateShares, customerPosition, animalPLInputs, findOrphanCash, round2, sumByCurrency } from '../lib/finance';
+import { cashBalances, cashFlowSummary, expensePosition, loanPosition, partnerLedger, profitAndLoss, allocateProfit, validateShares, customerPosition, netCustomerBalance, animalPLInputs, findOrphanCash, round2, sumByCurrency } from '../lib/finance';
 import { CURRENCIES, METHODS, allExpenseCategories, NEW_CAT, catLabel, CASH_AR, PARTNER_EXPENSE_CATS } from '../lib/constants';
 
 const cur = { name: 'currency', label: 'العملة', type: 'select', options: CURRENCIES, required: true, default: 'SYP' };
@@ -195,13 +195,14 @@ export function Settlements() {
     const pl = profitAndLoss({ agreements: ags, deliveries: dls, expenses: exps, otherIncome: cash.filter((t) => t.type === 'other_income' && !t.voided), animalSales: ap.animalSales, animalPurchases: ap.animalPurchases, from, to, currency: c, animalPurchaseAsExpense: false });
     // الذمم حتى تاريخ نهاية الفترة (وليس حتى اليوم)
     const cc = (x) => (x.currency || 'SYP') === c; const upTo = (x) => !x.date || x.date <= to;
-    const recv = round2(custs.filter((cu) => cu.status !== 'inactive' || true).reduce((a, cu) => a + customerPosition(cu.id, { agreements: ags.filter((x) => cc(x) && upTo(x)), deliveries: dls.filter(upTo), payments: pays.filter((x) => cc(x) && upTo(x)) }).receivable + (c === 'SYP' ? Number(cu.openingBalance || 0) : 0), 0));
+    const nets = custs.map((cu) => netCustomerBalance(cu.id, { agreements: ags.filter((x) => cc(x) && upTo(x)), deliveries: dls.filter(upTo), payments: pays.filter((x) => cc(x) && upTo(x)) }, c === 'SYP' ? cu.openingBalance : 0));
+    const recv = round2(nets.filter((v) => v > 0).reduce((a, v) => a + v, 0)); const custCredit = round2(-nets.filter((v) => v < 0).reduce((a, v) => a + v, 0)); // صافي كل عميل = كشف حسابه (بعد خصم دفعاته المقدمة)
     const payable = round2(exps.filter((e) => !e.voided && (e.currency || 'SYP') === c && e.date <= to).reduce((a, e) => a + expensePosition(e, epays.filter(upTo)).outstanding, 0));
     const loanBal = round2(loans.filter((l) => !l.voided && l.currency === c).reduce((a, l) => a + loanPosition(l, reps, to).outstandingPrincipal, 0));
     const shares = validateShares(partners); const prevDist = round2(led.filter((e) => e.type === 'profit_distribution' && e.currency === c && !e.voided && e.date <= to).reduce((a, e) => a + Number(e.amount), 0));
     const capital = round2(led.filter((e) => ['capital_contribution', 'additional_capital'].includes(e.type) && e.currency === c && !e.voided && e.date <= to).reduce((a, e) => a + Number(e.amount), 0));
     let alloc = null; try { if (shares.ok && partners.length) alloc = allocateProfit(pl.netProfit, partners); } catch { alloc = null; }
-    return { pl, recv, payable, loanBal, shares, prevDist, capital, alloc };
+    return { pl, recv, custCredit, payable, loanBal, shares, prevDist, capital, alloc };
   }, [ags, dls, exps, epays, pays, custs, cash, events, animals, loans, reps, led, partners, from, to, c, asExpense]);
   const allPartners = useCol('partners').rows; const name = (id) => allPartners.find((p) => p.id === id)?.name || '—';
   const distributedFor = (stId, pid) => round2(led.filter((e) => e.type === 'profit_distribution' && e.settlementId === stId && e.partnerId === pid && !e.voided).reduce((a, e) => a + Number(e.amount), 0));
@@ -210,7 +211,7 @@ export function Settlements() {
     ['إيراد الحليب (التسليمات)', calc.pl.milkRevenue], ['إيرادات أخرى', calc.pl.otherIncome], ['مبيعات المواشي (بسعر البيع كاملاً)', calc.pl.animalSales], ['إجمالي الإيراد', calc.pl.revenue, 'b'],
     ['مصروفات التشغيل (كلها — بدون شراء الحيوانات)', calc.pl.operatingExpenses], ['إجمالي المصروفات', calc.pl.totalExpenses, 'b'],
     ['صافي الربح / الخسارة', calc.pl.netProfit, 'net'],
-    ['ذمم العملاء (حتى نهاية الفترة)', calc.recv, 'i'], ['ذمم الموردين — مصروفات غير مسددة', calc.payable, 'i'], ['أرصدة قروض الشركاء (أصل)', calc.loanBal, 'i'], ['توزيعات نقدية سابقة', calc.prevDist, 'i']];
+    ['ذمم العملاء — عليهم لنا (صافي بعد خصم دفعاتهم المقدمة)', calc.recv, 'i'], ['أرصدة دائنة للعملاء — لهم علينا', calc.custCredit, 'i'], ['ذمم الموردين — مصروفات غير مسددة', calc.payable, 'i'], ['أرصدة قروض الشركاء (أصل)', calc.loanBal, 'i'], ['توزيعات نقدية سابقة', calc.prevDist, 'i']];
   const stDists = see ? led.filter((e) => e.type === 'profit_distribution' && e.settlementId === see.id && !e.voided).sort((a, b) => a.date.localeCompare(b.date)) : [];
   return (
     <div>

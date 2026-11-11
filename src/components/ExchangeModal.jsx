@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import { Modal, Toast, Field, fmt, today } from './ui';
 import AnimalPicker from './AnimalPicker';
+import { lightNum, numOf } from '../lib/num';
 import { useCol, useCustomLists, createAnimal, commit, newId } from '../data/db';
 import { recordAnimalEvent } from '../data/ops';
 import { useAuth } from '../data/auth';
@@ -23,7 +24,7 @@ export default function ExchangeModal({ onClose }) {
   // اختيار حيوان مسجّل مسبقاً يملأ قيمته (سعر شرائه) تلقائياً
   const pickIn = (v) => setF((x) => { const a = animals.find((y) => y.id === v); return { ...x, inId: v, newValue: x.newValue || (a && Number(a.acquisitionCost) > 0 ? String(a.acquisitionCost) : x.newValue) }; });
   const inAnimal = f.mode === 'existing' ? animals.find((a) => a.id === f.inId) : null;
-  const oldV = Number(f.oldValue) || 0, newV = Number(f.newValue) || 0; const diff = round2(newV - oldV);
+  const oldV = numOf(f.oldValue) || 0, newV = numOf(f.newValue) || 0; const diff = round2(newV - oldV);
   const submit = async () => {
     setErr(''); setBusy(true);
     try {
@@ -60,7 +61,7 @@ export default function ExchangeModal({ onClose }) {
         <Field label="التاريخ"><input type="date" dir="ltr" className="input" value={f.date} onChange={(e) => set('date', e.target.value)} /></Field>
         <div className="sm:col-span-2"><Field label="الحيوان الخارج (اكتب الرقم أو الاسم) *"><AnimalPicker animals={animals} value={f.outId} onChange={(v) => set('outId', v)} filter={(a) => herd[a.id]?.active} /></Field></div>
         {f.kind === 'exchange' && (<>
-          <Field label="قيمة الحيوان الخارج المتفق عليها"><input type="number" inputMode="decimal" dir="ltr" className="input" value={f.oldValue} onChange={(e) => set('oldValue', e.target.value)} /></Field>
+          <Field label="قيمة الحيوان الخارج المتفق عليها"><input type="text" inputMode="decimal" dir="ltr" className="input" value={f.oldValue} onChange={(e) => set('oldValue', lightNum(e.target.value))} /></Field>
           <Field label="العملة"><Sel k="currency" opts={CURRENCIES} /></Field>
           <div className="sm:col-span-2"><Field label="الحيوان الوارد"><Sel k="mode" opts={[['new', 'حيوان جديد — سجّل بياناته هنا في نفس الكارت'], ['existing', 'مسجّل مسبقاً (ابحث بالرقم أو الاسم)']]} /></Field></div>
           {f.mode === 'existing' ? (
@@ -75,12 +76,12 @@ export default function ExchangeModal({ onClose }) {
             <Field label="السلالة"><input className="input" value={f.breed} onChange={(e) => set('breed', e.target.value)} /></Field>
             <Field label="تاريخ الميلاد"><input type="date" dir="ltr" className="input" value={f.birthDate} onChange={(e) => set('birthDate', e.target.value)} /></Field>
             {f.sex === 'F' && (<>
-              <Field label="الحليب عند الشراء (لتر/يوم)"><input type="number" dir="ltr" className="input" value={f.milkAtPurchase} onChange={(e) => set('milkAtPurchase', e.target.value)} /></Field>
+              <Field label="الحليب عند الشراء (لتر/يوم)"><input type="text" inputMode="decimal" dir="ltr" className="input" value={f.milkAtPurchase} onChange={(e) => set('milkAtPurchase', lightNum(e.target.value))} /></Field>
               <Field label="الحمل"><Sel k="pregnant" opts={[['na', 'لا ينطبق'], ['no', 'غير حامل'], ['yes', 'حامل']]} /></Field>
-              {f.pregnant === 'yes' && <Field label="أيام متبقية على الولادة"><input type="number" dir="ltr" className="input" value={f.daysToBirth} onChange={(e) => set('daysToBirth', e.target.value)} /></Field>}
+              {f.pregnant === 'yes' && <Field label="أيام متبقية على الولادة"><input type="text" inputMode="numeric" dir="ltr" className="input" value={f.daysToBirth} onChange={(e) => set('daysToBirth', lightNum(e.target.value))} /></Field>}
             </>)}
           </>)}
-          <Field label="قيمة الحيوان الوارد المتفق عليها"><input type="number" inputMode="decimal" dir="ltr" className="input" value={f.newValue} onChange={(e) => set('newValue', e.target.value)} /></Field>
+          <Field label="قيمة الحيوان الوارد المتفق عليها"><input type="text" inputMode="decimal" dir="ltr" className="input" value={f.newValue} onChange={(e) => set('newValue', lightNum(e.target.value))} /></Field>
           {diff > 0 && <Field label="من يدفع فرق التبادل؟"><Sel k="payFrom" opts={[['partner', 'شريك يدفع من ماله (يُسجَّل في حسابه)'], ['account', 'من صندوق المزرعة']]} /></Field>}
           {diff > 0 && f.payFrom === 'partner' && <Field label="الشريك الذي دفع الفرق"><select className="input" value={payerId} onChange={(ev) => set('payerId', ev.target.value)}><option value="">— اختر —</option>{partners.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}</select></Field>}
           {(diff < 0 || (diff > 0 && f.payFrom === 'account')) && <Field label={diff < 0 ? 'الصندوق (لاستلام الفرق)' : 'الصندوق (لدفع الفرق)'}><select className="input" value={accountId} onChange={(ev) => set('accountId', ev.target.value)}><option value="">— اختر —</option>{accounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}</select></Field>}

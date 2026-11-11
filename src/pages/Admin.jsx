@@ -9,6 +9,7 @@ import { useCol, useAudit, useSettings, useCustomLists, saveRecord } from '../da
 import { addCustomCategory, saveCustomCategories } from '../data/ops';
 import { useAuth } from '../data/auth';
 import { ROLES } from '../lib/permissions';
+import { normNum } from '../lib/num';
 import { CURRENCIES, EXPENSE_CATEGORIES, ANIMAL_CATEGORIES } from '../lib/constants';
 import { Pencil, Trash2 } from 'lucide-react';
 
@@ -83,7 +84,7 @@ export function Settings() {
         <div className="grid gap-3 sm:grid-cols-2">
           <Field label="اسم المزرعة"><input className="input" value={v.farmName} onChange={(e) => set('farmName', e.target.value)} /></Field>
           <Field label="العملة الأساسية"><select className="input" value={v.baseCurrency} onChange={(e) => set('baseCurrency', e.target.value)}>{CURRENCIES.map(([c, l]) => <option key={c} value={c}>{l}</option>)}</select></Field>
-          <Field label="سعر الصرف USD → SYP (للتحويل الصريح فقط — لا تُجمع العملات تلقائياً)"><input className="input" type="number" dir="ltr" value={rates['USD->SYP'] || ''} onChange={(e) => set('rates', { ...rates, 'USD->SYP': Number(e.target.value) })} /></Field>
+          <Field label="سعر الصرف USD → SYP (للتحويل الصريح فقط — لا تُجمع العملات تلقائياً)"><input className="input" type="text" inputMode="decimal" dir="ltr" value={rates['USD->SYP'] || ''} onChange={(e) => set('rates', { ...rates, 'USD->SYP': Number(normNum(e.target.value)) || 0 })} /></Field>
           <div className="rounded-lg bg-slate-50 p-3 text-xs leading-relaxed text-slate-600 sm:col-span-2"><b>سياسة صافي الربح:</b> المبيعات كلها (حليب + بيع حيوانات بسعر البيع كاملاً + إيرادات أخرى) − كل المصروفات التشغيلية. <b>شراء الحيوانات لا يدخل في الأرباح.</b></div>
         </div>
         {can('manageUsers') ? <button className="btn btn-primary mt-4" onClick={save}>حفظ</button> : <p className="mt-3 text-sm text-slate-500">التعديل لمدير النظام فقط.</p>}

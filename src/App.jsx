@@ -17,9 +17,7 @@ const Settlements = page(() => import('./pages/Finance'), 'Settlements');
 const Production = page(() => import('./pages/modules'), 'Production');
 const Customers = page(() => import('./pages/modules'), 'Customers');
 const Partners = page(() => import('./pages/modules'), 'Partners');
-const Animals = page(() => import('./pages/modules'), 'Animals');
-const AnimalEvents = page(() => import('./pages/modules'), 'AnimalEvents');
-const Exchange = page(() => import('./pages/modules'), 'Exchange');
+const Livestock = page(() => import('./pages/modules'), 'Livestock');
 const Inventory = page(() => import('./pages/modules'), 'Inventory');
 const Users = page(() => import('./pages/Admin'), 'Users');
 const Settings = page(() => import('./pages/Admin'), 'Settings');
@@ -43,9 +41,9 @@ function Gate() {
         <Route path="partners" element={<Partners />} />
         <Route path="loans" element={<Loans />} />
         <Route path="settlements" element={<Settlements />} />
-        <Route path="animals" element={<Animals />} />
-        <Route path="animal-events" element={<AnimalEvents />} />
-        <Route path="exchange" element={<Exchange />} />
+        <Route path="animals" element={<Livestock />} />
+        <Route path="animal-events" element={<Livestock initial="events" />} />
+        <Route path="exchange" element={<Livestock initial="exchange" />} />
         <Route path="inventory" element={<Inventory />} />
         <Route path="reports" element={<Reports />} />
         <Route path="users" element={<Users />} />

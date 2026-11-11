@@ -1,11 +1,11 @@
 // Multi-record financial operations. Each is ONE atomic batch so related records can never get out of sync.
 import { serverTimestamp } from 'firebase/firestore';
 import { allExpenseCategories, allAnimalCategories, PARTNER_EXPENSE_CATS } from '../lib/constants';
-import { planPartnerRepayment, allocateToLoans, loanPosition, partnerDebt, cashBalances } from '../lib/finance';
+import { planPartnerRepayment, allocateToLoans, loanPosition, partnerDebt, cashBalances, purchaseSource } from '../lib/finance';
 import { commit, nextNumber, newId } from './db';
 import { validateDelivery, validateExpensePayment, partnerFundedExpenseEntry, makeTransfer, allocateProfit } from '../lib/finance';
 
-const today = () => new Date().toLocaleDateString('en-CA'); // تاريخ محلي
+const today = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; }; // تاريخ محلي (موثوق على iOS)
 
 export async function createAgreement(user, a) {
   const number = await nextNumber('agreement', 'AG');
@@ -519,4 +519,37 @@ export async function setPurchaseSource(user, ev, animal, { from, partnerId, acc
   }
   if (!partnerId) throw new Error('اختر الشريك');
   return linkPurchasesToPartner(user, [animal], { events: [ev], cash: ctx.cash || [], ledger: ctx.ledger || [] }, partnerId);
+}
+
+/** تغيير من دفع ثمن شراء حيوان: شريك آخر، أو من الصندوق، أو من شريك بدل الصندوق. يُلغى القيد/الحركة القديمة ويُنشأ الجديد (والسعر يبقى كما هو). */
+export async function changePurchasePayer(user, animal, { events = [], ledger = [], cash = [] } = {}, { from, partnerId, accountId }) {
+  const src = purchaseSource(animal, { events, ledger, cash }); const ev = src.event;
+  if (!ev || !(Number(ev.value) > 0)) throw new Error('لا يوجد شراء بسعر مسجّل لهذا الحيوان');
+  if (from === 'partner' && !partnerId) throw new Error('اختر الشريك الذي دفع');
+  if (from === 'account' && !accountId) throw new Error('اختر الصندوق');
+  if ((from === 'partner' && src.from === 'partner' && src.partnerId === partnerId) || (from === 'account' && src.from === 'account' && src.accountId === accountId)) return 0; // لا تغيير
+  const ops = [];
+  if (src.ledgerId) ops.push({ col: 'partnerCapitalTransactions', id: src.ledgerId, merge: true, data: voidData('تغيير من دفع ثمن الحيوان'), action: 'void' });
+  if (src.cashId) ops.push({ col: 'cashTransactions', id: src.cashId, merge: true, data: voidData('تغيير من دفع ثمن الحيوان'), action: 'void' });
+  if (from === 'partner') {
+    ops.push({ col: 'partnerCapitalTransactions', data: { partnerId, date: ev.date, type: 'animal_purchase_paid', amount: Number(ev.value), currency: ev.currency || 'SYP', animalId: animal.id, eventId: ev.id, note: `شراء ${animal.tag}` } });
+    ops.push({ col: 'animalEvents', id: ev.id, merge: true, data: { paidFrom: 'partner', payerPartnerId: partnerId } });
+  } else {
+    ops.push({ col: 'cashTransactions', data: { date: ev.date, type: 'animal_purchase', direction: 'out', amount: Number(ev.value), currency: ev.currency || 'SYP', accountId, animalId: animal.id, description: `شراء ${animal.tag}` } });
+    ops.push({ col: 'animalEvents', id: ev.id, merge: true, data: { paidFrom: 'account', payerPartnerId: null } });
+  }
+  await commit(user, ops, 'update');
+  return ops.length;
+}
+
+/** تعديل سعر شراء حيوان: يتحدّث حدث الشراء وقيد حساب الشريك (أو حركة الصندوق) فلا يختلف السعر بين الأماكن. */
+export async function changePurchasePrice(user, animal, { events = [], ledger = [], cash = [] } = {}, newCost) {
+  const amount = Number(newCost); if (!(amount >= 0)) throw new Error('سعر الشراء غير صحيح');
+  const src = purchaseSource(animal, { events, ledger, cash }); if (!src.event) return 0;
+  if (Number(src.event.value) === amount) return 0;
+  const ops = [{ col: 'animalEvents', id: src.event.id, merge: true, data: { value: amount } }];
+  if (src.ledgerId) ops.push({ col: 'partnerCapitalTransactions', id: src.ledgerId, merge: true, data: { amount } });
+  if (src.cashId) ops.push({ col: 'cashTransactions', id: src.cashId, merge: true, data: { amount } });
+  await commit(user, ops, 'update');
+  return ops.length;
 }

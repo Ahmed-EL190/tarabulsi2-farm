@@ -3,7 +3,7 @@ import { useEffect, Children } from 'react';
 
 export const fmt = (v, d = 2) => new Intl.NumberFormat('en-US', { maximumFractionDigits: d }).format(Number(v) || 0);
 export const money = (v, cur = 'SYP') => `${fmt(v)} ${cur === 'SYP' ? 'ل.س' : cur === 'USD' ? '$' : cur}`;
-export const today = () => new Date().toLocaleDateString('en-CA'); // تاريخ اليوم محلياً (لا UTC)
+export const today = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; }; // تاريخ اليوم محلياً (موثوق على iOS Safari)
 export const CUR_LABEL = { SYP: 'ل.س', USD: '$' };
 
 export function Card({ title, icon: Icon, action, children, className = '' }) {

@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react';
+import { lightNum, numOf } from '../lib/num';
 import { Modal, Toast, Field, Avatar, fmt, today } from './ui';
 import AnimalPicker from './AnimalPicker';
 import { useCol, useCustomLists } from '../data/db';
@@ -24,7 +25,7 @@ export default function AnimalSale({ onClose, preselectId = null }) {
   const active = !!animal && !!herd[animal.id]?.active;
   const prof = animal ? animalProfile(animal, { events, production, expenses }) : null;
   const accountId = f.accountId || (accounts.length === 1 ? accounts[0].id : '');
-  const price = Number(f.price) || 0; const cost = Number(animal?.acquisitionCost) || 0;
+  const price = numOf(f.price) || 0; const cost = Number(animal?.acquisitionCost) || 0;
   const set = (k, v) => setF({ ...f, [k]: v });
   const submit = async () => {
     setErr('');
@@ -55,7 +56,7 @@ export default function AnimalSale({ onClose, preselectId = null }) {
         {!active ? <div className="rounded-lg bg-amber-50 p-3 text-sm font-bold text-amber-800">هذا الحيوان خارج القطيع النشط ولا يمكن بيعه.</div> : (
           <div className="grid gap-3 sm:grid-cols-2">
             <Field label="تاريخ البيع *"><input type="date" className="input" dir="ltr" value={f.date} onChange={(e) => set('date', e.target.value)} /></Field>
-            <Field label="سعر البيع *"><input type="number" inputMode="decimal" className="input" dir="ltr" value={f.price} onChange={(e) => set('price', e.target.value)} /></Field>
+            <Field label="سعر البيع *"><input type="text" inputMode="decimal" className="input" dir="ltr" value={f.price} onChange={(e) => set('price', lightNum(e.target.value))} /></Field>
             <Field label="العملة"><select className="input" value={f.currency} onChange={(e) => set('currency', e.target.value)}>{CURRENCIES.map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select></Field>
             <Field label="الصندوق المستلِم *"><select className="input" value={accountId} onChange={(e) => set('accountId', e.target.value)}><option value="">— اختر —</option>{accounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}</select></Field>
             <Field label="المشتري"><input className="input" value={f.buyerName} onChange={(e) => set('buyerName', e.target.value)} /></Field>

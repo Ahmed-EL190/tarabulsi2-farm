@@ -4,6 +4,7 @@ import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 import { Plus, Pencil, Ban, Camera, X as XIcon } from 'lucide-react';
 import { compressImage } from '../lib/image';
+import { normNum } from '../lib/num';
 import { Card, Table, Modal, Field, PageHeader, SearchBox, Empty, Toast, today } from './ui';
 import { useCol, saveRecord, voidRecord } from '../data/db';
 import { useAuth } from '../data/auth';
@@ -45,7 +46,7 @@ function ImageField({ f, register, setValue, getValues }) {
       <div className="flex items-center gap-3">
         {v ? <img src={v} alt="" className="h-20 w-20 rounded-xl border object-cover" /> : <div className="grid h-20 w-20 place-items-center rounded-xl border border-dashed text-slate-300"><Camera size={26} /></div>}
         <div className="flex flex-col gap-2">
-          <label className="btn btn-ghost cursor-pointer !py-1.5 text-xs"><Camera size={15} />{busy ? 'جارٍ المعالجة…' : v ? 'تغيير الصورة' : 'التقاط / اختيار صورة'}<input type="file" accept="image/*" className="hidden" onChange={pick} disabled={busy} /></label>
+          <label className="btn btn-ghost cursor-pointer !py-1.5 text-xs"><Camera size={15} />{busy ? 'جارٍ المعالجة…' : v ? 'تغيير الصورة' : 'التقاط / اختيار صورة'}<input type="file" accept="image/*" className="sr-only" onChange={pick} disabled={busy} /></label>
           {v && <button type="button" className="btn btn-danger !py-1.5 text-xs" onClick={() => { setValue(f.name, '', { shouldDirty: true }); setLocal(''); }}><XIcon size={14} />حذف الصورة</button>}
         </div>
       </div>
@@ -54,13 +55,13 @@ function ImageField({ f, register, setValue, getValues }) {
   );
 }
 export function FieldInput({ f, register, errors, setValue, getValues }) {
-  const reg = register(f.name);
+  const reg = register(f.name, f.type === 'number' ? { setValueAs: normNum } : undefined);
   if (f.type === 'image') return <ImageField f={f} register={register} setValue={setValue} getValues={getValues} />;
   let input;
   if (f.type === 'select') input = <select className="input" {...reg}>{!f.required && <option value="">—</option>}{f.options.map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select>;
   else if (f.type === 'rel') input = <RelSelect f={f} reg={reg} setValue={setValue} getValues={getValues} />;
   else if (f.type === 'textarea') input = <textarea className="input" rows={2} {...reg} />;
-  else input = <input className="input" type={f.type === 'number' ? 'number' : f.type === 'date' ? 'date' : 'text'} step="any" dir={f.type === 'number' || f.type === 'date' ? 'ltr' : undefined} {...reg} />;
+  else input = <input className="input" type={f.type === 'date' ? 'date' : 'text'} {...(f.type === 'number' ? { inputMode: 'decimal', autoComplete: 'off' } : {})} dir={f.type === 'number' || f.type === 'date' ? 'ltr' : undefined} {...reg} />;
   return <Field label={f.label + (f.required ? ' *' : '')} error={errors[f.name]?.message}>{input}</Field>;
 }
 
@@ -87,11 +88,12 @@ export function FormModal({ open, onClose, title, fields, defaults, onSubmit, su
 
 /** Config-driven list + add/edit/void page.
  * props: title, subtitle, col, fields, cols(ctx)=>[], defaults, searchKeys, create(user,data), useCtx(), summary(rows,ctx), actions(row,ctx), emptyHint, filter(row) */
-export default function CrudPage({ title, subtitle, col, fields, cols, defaults = {}, searchKeys = [], create, useCtx, summary, rowActions, emptyHint, filter, noEdit, extraHeader, createOnlyFields = [], noAdd, update, onVoid, filters = [] }) {
+export default function CrudPage({ title, subtitle, col, fields, cols, defaults = {}, searchKeys = [], create, useCtx, summary, rowActions, emptyHint, filter, noEdit, extraHeader, createOnlyFields = [], noAdd, update, onVoid, filters = [], onRowClick, openEditRef, editDefaults }) {
   const { user, can } = useAuth();
   const { rows, loading } = useCol(col);
   const ctx = useCtx ? useCtx() : {};
   const [q, setQ] = useState(''); const [edit, setEdit] = useState(null); const [open, setOpen] = useState(false); const [fv, setFv] = useState({});
+  if (openEditRef) openEditRef.current = (r) => { setEdit(r); setOpen(true); }; // يسمح لنافذة خارجية (بطاقة الحيوان) بفتح نموذج التعديل
   const shown = useMemo(() => rows.filter((r) => !r.voided && (!filter || filter(r)) && filters.every((x) => !fv[x.key] || (x.test ? x.test(r, fv[x.key], ctx) : String(r[x.key] ?? '') === fv[x.key])) && (!q || searchKeys.some((k) => String(r[k] ?? '').toLowerCase().includes(q.toLowerCase()))))
     .sort((a, b) => String(b.date || b.createdAt?.seconds || '').localeCompare(String(a.date || a.createdAt?.seconds || ''))), [rows, q, filter, searchKeys, fv, ctx]); // eslint-disable-line
   const columns = [...cols(ctx, rows), { key: '_a', label: '', render: (r) => (
@@ -116,10 +118,10 @@ export default function CrudPage({ title, subtitle, col, fields, cols, defaults 
           {Object.values(fv).some(Boolean) && <button type="button" className="btn btn-ghost !py-2 text-xs" onClick={() => setFv({})}>مسح الفلاتر</button>}
         </div>
         {loading ? <div className="p-6 text-center text-slate-400">جارٍ التحميل…</div> :
-          <Table columns={columns} rows={shown} empty={<Empty title="لا توجد سجلات بعد" hint={emptyHint || 'ابدأ بإضافة أول سجل حقيقي.'}>{can('create') && !noAdd && <button className="btn btn-primary mt-2" onClick={() => { setEdit(null); setOpen(true); }}><Plus size={16} />إضافة أول سجل</button>}</Empty>} />}
+          <Table columns={columns} rows={shown} onRow={onRowClick ? (r) => onRowClick(r, ctx) : undefined} empty={<Empty title="لا توجد سجلات بعد" hint={emptyHint || 'ابدأ بإضافة أول سجل حقيقي.'}>{can('create') && !noAdd && <button className="btn btn-primary mt-2" onClick={() => { setEdit(null); setOpen(true); }}><Plus size={16} />إضافة أول سجل</button>}</Empty>} />}
       </Card>
       <FormModal open={open && !(noAdd && !edit)} onClose={() => setOpen(false)} title={edit ? 'تعديل' : 'إضافة'} fields={formFields}
-        defaults={edit ? Object.fromEntries(formFields.map((f) => [f.name, edit[f.name] ?? ''])) : Object.fromEntries(formFields.map((f) => [f.name, defaults[f.name] ?? (f.type === 'date' ? today() : f.default ?? '')]))}
+        defaults={edit ? { ...Object.fromEntries(formFields.map((f) => [f.name, edit[f.name] ?? ''])), ...(editDefaults ? editDefaults(edit, ctx) : {}) } : Object.fromEntries(formFields.map((f) => [f.name, defaults[f.name] ?? (f.type === 'date' ? today() : f.default ?? '')]))}
         onSubmit={onSubmit} />
     </div>
   );

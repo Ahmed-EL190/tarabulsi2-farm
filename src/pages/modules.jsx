@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useState, useRef } from 'react';
 import { FileText, BookOpen, Info, Landmark, HandCoins, Pencil, Ban } from 'lucide-react';
 import CrudPage, { FormModal } from '../components/CrudPage';
 import ExportButtons from '../components/ExportButtons';
@@ -6,9 +6,9 @@ import AnimalSale from '../components/AnimalSale';
 import ExchangeModal from '../components/ExchangeModal';
 import { Card, Stat, Table, Badge, Modal, Empty, PageHeader, Avatar, money, fmt, today } from '../components/ui';
 import { useCol, useSettings, useCustomLists, createAnimal, saveRecord, commit, newId } from '../data/db';
-import { recordAnimalEvent, partnerMovement, voidAnimalCascade, voidAnimalEventCascade, animalPurchasePayment, linkPurchasesToPartner, voidInitialCapital, repayPartner, switchExchangeDiffToPartner, voidCashTransactions, addCustomCategory, updateLedgerEntry, voidLedgerEntry } from '../data/ops';
+import { recordAnimalEvent, partnerMovement, voidAnimalCascade, voidAnimalEventCascade, animalPurchasePayment, linkPurchasesToPartner, voidInitialCapital, repayPartner, switchExchangeDiffToPartner, voidCashTransactions, addCustomCategory, updateLedgerEntry, voidLedgerEntry, changePurchasePayer, changePurchasePrice } from '../data/ops';
 import { useAuth } from '../data/auth';
-import { customerPosition, customerStatement, partnerLedger, herdState, animalExchange, validateNewAnimal, animalProfile, partnerDebt, cashBalances, round2, LEDGER_TYPES } from '../lib/finance';
+import { customerPosition, customerStatement, partnerLedger, herdState, animalExchange, validateNewAnimal, animalProfile, partnerDebt, cashBalances, herdValue, purchaseSource, round2, LEDGER_TYPES } from '../lib/finance';
 import { CURRENCIES, LEDGER_AR, allAnimalCategories, animalCatLabel, NEW_CAT } from '../lib/constants';
 const animalOpt = (r) => `${r.tag}${r.name ? ' - ' + r.name : ''}`;
 
@@ -192,10 +192,10 @@ function ResetCapital() {
 }
 
 // ───────── المواشي
-const animalCtx = () => ({ events: useCol('animalEvents').rows, animals: useCol('animals').rows, production: useCol('milkProduction').rows, expenses: useCol('expenses').rows, cash: useCol('cashTransactions').rows, ledger: useCol('partnerCapitalTransactions').rows });
+const animalCtx = () => ({ events: useCol('animalEvents').rows, animals: useCol('animals').rows, production: useCol('milkProduction').rows, expenses: useCol('expenses').rows, cash: useCol('cashTransactions').rows, ledger: useCol('partnerCapitalTransactions').rows, partners: useCol('partners').rows, accounts: useCol('cashAccounts').rows });
 // الشريك الافتراضي لدفع المشتريات: من اسمه «وليد» (أبو وليد)، أو الشريك الوحيد إن وُجد واحد فقط
 const useDefaultPayer = () => { const ps = useCol('partners').rows.filter((p) => !p.voided); return ps.find((p) => /وليد/.test(p.name || ''))?.id || (ps.length === 1 ? ps[0].id : ''); };
-const payShow = (v) => v.origin === 'purchase' || (v.origin === undefined && v.withCalf === 'yes' && Number(v.calfCost) > 0);
+const payShow = (v) => v.origin === 'purchase' || v.hasPurchase === 'yes' || (v.origin === undefined && v.withCalf === 'yes' && Number(v.calfCost) > 0);
 const checkCalf = (d, motherTag, animals) => {
   const c = validateNewAnimal(d.calfTag, animals); if (!c.ok) throw new Error(c.reason === 'duplicate' ? 'رقم الصغير مسجّل مسبقاً' : 'أدخل رقم الصغير');
   if (String(d.calfTag).trim().toLowerCase() === String(motherTag).trim().toLowerCase()) throw new Error('رقم الصغير يجب أن يختلف عن رقم الأم');
@@ -246,9 +246,63 @@ function LinkCapitalPurchases({ payer }) {
     {open && <FormModal open onClose={() => setOpen(false)} title={`ربط ${pending.length} عملية شراء (${fmt(total)}) بحساب شريك`} submitLabel="ربط الكل" fields={[{ name: 'partnerId', label: 'الشريك الذي دفع (يُسجَّل المبلغ في حسابه)', type: 'rel', col: 'partners', required: true }]} defaults={{ partnerId: payer }}
       onSubmit={(d) => linkPurchasesToPartner(user, animals, { events, cash, ledger }, d.partnerId)} />}</>);
 }
+
+const EV_AR = { purchase: 'شراء', birth: 'ولادة', death: 'نفوق', sale: 'بيع', exchange_in: 'تبادل (دخول)', exchange_out: 'تبادل (خروج)', opening: 'رصيد افتتاحي', transfer_out: 'نقل (خروج)', transfer_in: 'نقل (دخول)' };
+/** بطاقة الحيوان: كل بياناته في مكان واحد (الاقتناء ومن دفع، الأم والصغار، الأحداث، المالية) مع تغيير من دفع. */
+function AnimalCard({ animal, onClose, onEdit, onSell }) {
+  const { user, can } = useAuth();
+  const animals = useCol('animals').rows, events = useCol('animalEvents').rows, ledger = useCol('partnerCapitalTransactions').rows, cash = useCol('cashTransactions').rows, partners = useCol('partners').rows, accounts = useCol('cashAccounts').rows;
+  const [chg, setChg] = useState(false);
+  const a = animals.find((x) => x.id === animal.id) || animal; const h = herdState(events, animals)[a.id]; const src = purchaseSource(a, { events, ledger, cash });
+  const mom = animals.find((x) => x.id === a.motherId); const kids = animals.filter((x) => !x.voided && x.motherId === a.id);
+  const myEv = events.filter((e) => !e.voided && e.animalId === a.id).sort((x, y) => y.date.localeCompare(x.date)); const sale = myEv.find((e) => e.type === 'sale'); const cost = Number(a.acquisitionCost) || 0;
+  const pName = (id) => partners.find((p) => p.id === id)?.name || '—'; const aName = (id) => accounts.find((x) => x.id === id)?.name || '—';
+  const payer = src.from === 'partner' ? `الشريك: ${pName(src.partnerId)}` : src.from === 'account' ? `الصندوق: ${aName(src.accountId)}` : (a.origin === 'purchase' ? 'غير محدد (اضغط تغيير)' : '—');
+  const status = h?.active ? (a.healthStatus === 'sick' ? 'مريض' : 'في القطيع') : h ? ({ sale: 'مباع', death: 'نافق', exchange_out: 'مبادَل', transfer_out: 'منقول' }[h.last] || 'خرج') : '—';
+  const info = [['الفئة', animalCatLabel(a.category)], ['الجنس', a.sex === 'F' ? 'أنثى' : 'ذكر'], ['السلالة', a.breed], ['تاريخ الميلاد', a.birthDate], ['المصدر', a.viaExchange ? 'تبادل' : { purchase: 'شراء', birth: 'مولود بالمزرعة', opening: 'رصيد افتتاحي' }[a.origin]], ['جهة الشراء / البائع', a.sellerName], ['تاريخ الاقتناء', a.acquisitionDate], ['سعر الشراء', cost ? `${fmt(cost)} ${a.currency || ''}` : ''], ['مين دفع ثمنها', payer], ['الأم', mom ? `${mom.tag}${mom.name ? ' — ' + mom.name : ''}` : (a.motherTag || '')], ['الصغار (معها)', kids.map((k) => `${k.tag}${k.name ? ' — ' + k.name : ''}`).join('، ')], ['الحمل', { yes: 'حامل', no: 'غير حامل' }[a.pregnant]], ['حليب عند الشراء', a.milkAtPurchase ? `${a.milkAtPurchase} لتر/يوم` : ''], ['ملاحظات', a.notes]].filter(([, v]) => v);
+  return (
+    <Modal open onClose={onClose} title={`${a.tag}${a.name ? ' — ' + a.name : ''}`} wide>
+      <div className="mb-3 flex flex-wrap items-center gap-3">{a.photo ? <img src={a.photo} alt={a.tag} className="h-24 w-24 rounded-xl border object-cover" /> : <Avatar size={64} />}
+        <div className="flex flex-wrap gap-2"><Badge tone={h?.active ? 'green' : 'gray'}>{status}</Badge>
+          {can('update') && <button className="btn btn-ghost !py-1.5 text-xs" onClick={() => onEdit(a)}>تعديل كل البيانات</button>}{h?.active && <button className="btn btn-ghost !py-1.5 text-xs" onClick={() => onSell(a)}>بيع</button>}
+          {can('update') && src.event && Number(src.event.value) > 0 && <button className="btn btn-ghost !py-1.5 text-xs" onClick={() => setChg(true)}>تغيير من دفع</button>}</div></div>
+      <div className="mb-3 grid grid-cols-1 gap-x-4 gap-y-1 sm:grid-cols-2">{info.map(([k, v]) => <div key={k} className="flex items-start justify-between gap-3 border-b border-slate-100 py-1.5 text-sm"><span className="shrink-0 text-xs font-bold text-slate-500">{k}</span><span className="min-w-0 break-words font-medium">{v}</span></div>)}</div>
+      {sale && <div className="mb-3 rounded-lg bg-slate-50 p-2 text-sm">بيع بـ <b>{fmt(sale.value)}</b> {sale.currency || ''} بتاريخ {sale.date}{cost ? <> — {Number(sale.value) - cost >= 0 ? 'ربح' : 'خسارة'} <b className={Number(sale.value) - cost >= 0 ? 'text-emerald-700' : 'text-rose-600'}>{fmt(Math.abs(Number(sale.value) - cost))}</b></> : null}</div>}
+      <div className="mb-1 text-sm font-extrabold">الأحداث</div>
+      <Table rows={myEv} empty={<Empty title="لا توجد أحداث" />} columns={[{ key: 'date', label: 'التاريخ' }, { key: 'type', label: 'الحدث', render: (r) => EV_AR[r.type] || r.type }, { key: 'value', label: 'القيمة', render: (r) => (Number(r.value) ? <span className="num">{fmt(r.value)}</span> : '—') }, { key: 'notes', label: 'ملاحظات', hideMobile: true }]} />
+      {chg && <FormModal open onClose={() => setChg(false)} title={`من دفع ثمن ${a.tag}؟ (${fmt(src.amount)})`} submitLabel="حفظ التغيير"
+        fields={[{ name: 'payFrom', label: 'الدافع', type: 'select', required: true, options: [['partner', 'شريك — يُسجَّل المبلغ في حسابه'], ['account', 'من صندوق المزرعة']] }, { name: 'payPartnerId', label: 'الشريك', type: 'rel', col: 'partners', showIf: (v) => v.payFrom === 'partner' }, { ...acct, showIf: (v) => v.payFrom === 'account' }]}
+        defaults={{ payFrom: src.from === 'account' ? 'account' : 'partner', payPartnerId: src.partnerId || '', accountId: src.accountId || '' }} onSubmit={(d) => changePurchasePayer(user, a, { events, ledger, cash }, { from: d.payFrom, partnerId: d.payPartnerId, accountId: d.accountId })} />}
+    </Modal>
+  );
+}
+/** قيمة القطيع الحالية بتكلفة الشراء (الموجود فعلاً فقط) حسب الفئة والعملة. */
+function HerdValue() {
+  const s = useSettings(); const animals = useCol('animals').rows, events = useCol('animalEvents').rows, ledger = useCol('partnerCapitalTransactions').rows, cash = useCol('cashTransactions').rows, partners = useCol('partners').rows, accounts = useCol('cashAccounts').rows;
+  const hv = herdValue(animals, events);
+  const payerOf = (a) => { const x = purchaseSource(a, { events, ledger, cash }); return x.from === 'partner' ? (partners.find((p) => p.id === x.partnerId)?.name || '—') : x.from === 'account' ? `الصندوق: ${accounts.find((c) => c.id === x.accountId)?.name || ''}` : '—'; };
+  const rows = [...hv.rows].sort((x, y) => String(x.category).localeCompare(String(y.category)) || Number(y.acquisitionCost || 0) - Number(x.acquisitionCost || 0)).map((a) => ({ id: a.id, tag: a.tag, name: a.name || '', cat: animalCatLabel(a.category), acq: a.acquisitionDate, cost: Number(a.acquisitionCost || 0), currency: a.currency || 'SYP', payer: payerOf(a) }));
+  const report = { farm: s.farmName, title: 'قيمة القطيع الحالية (بتكلفة الشراء)', currency: 'SYP', columns: [{ key: 'tag', label: 'الرقم' }, { key: 'name', label: 'الاسم' }, { key: 'cat', label: 'الفئة' }, { key: 'acq', label: 'تاريخ الاقتناء', type: 'date' }, { key: 'payer', label: 'مين دفع' }, { key: 'cost', label: 'التكلفة', type: 'money' }], rows: rows.filter((r) => r.currency === 'SYP'), totals: { cost: hv.byCurrency.SYP || 0 }, summary: [{ label: 'عدد الحيوانات', value: hv.count }, ...Object.entries(hv.byCurrency).map(([c, v]) => ({ label: `إجمالي التكلفة (${c})`, value: v }))] };
+  return (
+    <div className="space-y-4">
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4"><Stat label="عدد الحيوانات الموجودة" value={hv.count} tone="blue" />{Object.entries(hv.byCurrency).map(([c, v]) => <Stat key={c} label={`قيمة القطيع بالتكلفة (${c})`} value={<span className="text-base sm:text-xl">{money(v, c)}</span>} tone="green" />)}</div>
+      <Card title="حسب الفئة" action={<ExportButtons report={report} />}><Table rows={hv.byCategory.map((x, i) => ({ id: i, ...x }))} empty={<Empty title="لا توجد حيوانات" />} columns={[{ key: 'category', label: 'الفئة', render: (r) => animalCatLabel(r.category) || r.category }, { key: 'count', label: 'العدد' }, { key: 'cost', label: 'التكلفة', render: (r) => <b className="num">{money(r.cost, r.currency)}</b> }]} /></Card>
+      <Card title="كل الحيوانات الموجودة"><Table rows={rows} columns={[{ key: 'tag', label: 'الرقم' }, { key: 'name', label: 'الاسم', hideMobile: true }, { key: 'cat', label: 'الفئة' }, { key: 'payer', label: 'مين دفع' }, { key: 'cost', label: 'التكلفة', render: (r) => <b className="num">{money(r.cost, r.currency)}</b> }]} /></Card>
+      <p className="text-xs text-slate-500">القيمة بتكلفة الشراء (لا سعر السوق): المولود بالمزرعة تكلفته صفر. الحيوانات المباعة أو النافقة أو المبادَلة أو الملغاة لا تدخل.</p>
+    </div>
+  );
+}
+/** صفحة «المواشي»: كل ما يخص القطيع في مكان واحد بتبويبات (القطيع، المواليد والوفيات، التبادل، قيمة القطيع). */
+export function Livestock({ initial = 'herd' }) {
+  const [tab, setTab] = useState(initial);
+  const tabs = [['herd', 'القطيع'], ['events', 'المواليد والوفيات'], ['exchange', 'تبادل ونقل'], ['value', 'قيمة القطيع']];
+  return (<div><div className="mb-4 flex flex-wrap gap-2">{tabs.map(([k, l]) => <button key={k} className={`btn ${tab === k ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setTab(k)}>{l}</button>)}</div>
+    {tab === 'herd' && <Animals />}{tab === 'events' && <AnimalEvents />}{tab === 'exchange' && <Exchange />}{tab === 'value' && <HerdValue />}</div>);
+}
 export function Animals() {
   const [sale, setSale] = useState(null); // null | true | animalId
   const [view, setView] = useState(null); // صورة مكبّرة
+  const [card, setCard] = useState(null); const editRef = useRef(null);
   const payer = useDefaultPayer(); const [audit, setAudit] = useState(false); const lists = useCustomLists();
   const calfF = (o) => ({ showIf: (v) => v.withCalf === 'yes', ...o });
   const fields = [
@@ -275,7 +329,8 @@ export function Animals() {
   return (<>
     <CrudPage title="المواشي والعجول" subtitle="رقم الحيوان فريد. اضغط أيقونة التفاصيل لعرض بيانات الحيوان وبيعه" col="animals" searchKeys={['tag', 'name', 'breed']} useCtx={animalCtx}
       extraHeader={<><LinkCapitalPurchases payer={payer} /><button className="btn btn-ghost" onClick={() => setAudit(true)}>تدقيق المشتريات</button><button className="btn btn-ghost" onClick={() => setSale(true)}>بيع حيوان</button></>}
-      fields={fields} defaults={{ payFrom: 'partner', payPartnerId: payer }} createOnlyFields={['origin']} onVoid={(u, r, ctx, why) => voidAnimalCascade(u, r, ctx, why)}
+      fields={fields} defaults={{ payFrom: 'partner', payPartnerId: payer }} createOnlyFields={['origin']} onRowClick={(r) => setCard(r)} openEditRef={editRef}
+      editDefaults={(rec, ctx) => { const s = purchaseSource(rec, { events: ctx.events, ledger: ctx.ledger, cash: ctx.cash }); return s.event && Number(s.event.value) > 0 ? { hasPurchase: 'yes', payFrom: s.from === 'account' ? 'account' : 'partner', payPartnerId: s.partnerId || '', accountId: s.accountId || '' } : {}; }} onVoid={(u, r, ctx, why) => voidAnimalCascade(u, r, ctx, why)}
       create={async (u, d, { animals }) => {
         const ok = validateNewAnimal(d.tag, animals); if (!ok.ok) throw new Error(ok.reason === 'duplicate' ? 'رقم الحيوان مسجّل مسبقاً' : 'رقم الحيوان مطلوب');
         const calf = d.withCalf === 'yes'; if (calf) checkCalf(d, d.tag, animals);
@@ -289,7 +344,8 @@ export function Animals() {
         await recordAnimalEvent(u, { animalId: id, tag: d.tag, type: origin, date: d.acquisitionDate, value: d.acquisitionCost || 0, currency: d.currency, ...mp.extra }, mp.cash, mp.ledger);
         if (calf) await addCalf(u, id, { ...rest, id }, { ...d, calfCategory }, { origin, date: d.acquisitionDate, currency: d.currency, pay });
       }}
-      update={async (u, d, edit, { animals }) => {
+      update={async (u, d, edit, ctx) => {
+        const { animals } = ctx;
         let { withCalf, calfTag, calfName, calfCategory, calfSex, calfBreed, calfBirthDate, calfCost, calfHealth, calfPhoto, payFrom, payPartnerId, accountId, newCategory, calfNewCategory, ...rest } = d;
         if (String(rest.tag || '').trim().toLowerCase() !== String(edit.tag).trim().toLowerCase()) { const ok = validateNewAnimal(rest.tag, animals.filter((a) => a.id !== edit.id)); if (!ok.ok) throw new Error(ok.reason === 'duplicate' ? 'رقم الحيوان مسجّل مسبقاً' : 'رقم الحيوان مطلوب'); }
         const calf = withCalf === 'yes'; if (calf) checkCalf(d, rest.tag, animals);
@@ -299,12 +355,17 @@ export function Animals() {
         if (rest.category === '__new__') rest.category = await addCustomCategory(u, 'animal', newCategory, lists.animal);
         if (calf && calfCategory === '__new__') calfCategory = await addCustomCategory(u, 'animal', calfNewCategory, lists.animal);
         await saveRecord(u, 'animals', rest, edit.id);
+        // سعر الشراء ومن دفع: يتزامنان مع حدث الشراء وقيد الشريك/حركة الصندوق
+        const pctx = { events: ctx.events, ledger: ctx.ledger, cash: ctx.cash }; const srcNow = purchaseSource(edit, pctx); const newCost = Number(rest.acquisitionCost || 0);
+        if (srcNow.event && newCost !== Number(srcNow.event.value)) { await changePurchasePrice(u, edit, pctx, newCost); pctx.events = pctx.events.map((e) => (e.id === srcNow.event.id ? { ...e, value: newCost } : e)); }
+        if (payFrom && srcNow.event && !(calf && cost > 0)) await changePurchasePayer(u, { ...edit, ...rest }, pctx, { from: payFrom, partnerId: payPartnerId, accountId });
         // إضافة صغير لحيوان موجود: مولود بالمزرعة (أو مشترى لو أدخلت له سعراً)
         if (calf) await addCalf(u, edit.id, { ...edit, ...rest }, { ...d, calfCategory }, { origin: cost > 0 ? 'purchase' : 'birth', date: cdate, currency: cur2, pay });
       }}
       summary={(rows, ctx) => { const h = herdState(ctx.events, ctx.animals); const soon = rows.filter((r) => h[r.id]?.active && (animalProfile(r, ctx).daysToCalving ?? 999) <= 30 && animalProfile(r, ctx).daysToCalving !== null).length;
-        return <div className="grid grid-cols-2 gap-3 sm:grid-cols-5"><Stat label="القطيع النشط" value={Object.values(h).filter((x) => x.active).length} /><Stat label="مريض" value={rows.filter((r) => h[r.id]?.active && r.healthStatus === 'sick').length} tone="red" /><Stat label="ولادات خلال 30 يوم" value={soon} tone="amber" /><Stat label="إجمالي السجلات" value={rows.length} /><Stat label="خرجت من القطيع" value={Object.values(h).filter((x) => !x.active).length} /></div>; }}
+        return <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-6"><Stat label="القطيع النشط" value={Object.values(h).filter((x) => x.active).length} /><Stat label="مريض" value={rows.filter((r) => h[r.id]?.active && r.healthStatus === 'sick').length} tone="red" /><Stat label="ولادات خلال 30 يوم" value={soon} tone="amber" /><Stat label="إجمالي السجلات" value={rows.length} /><Stat label="خرجت من القطيع" value={Object.values(h).filter((x) => !x.active).length} /><Stat label="قيمة القطيع (بالتكلفة)" value={<span className="text-base sm:text-xl">{money(herdValue(ctx.animals, ctx.events).byCurrency.SYP || 0)}</span>} tone="green" /></div>; }}
       cols={(ctx) => { const h = herdState(ctx.events, ctx.animals); return [{ key: 'photo', label: 'الصورة', render: (r) => <Avatar src={r.photo} size={44} alt={r.tag} onClick={r.photo ? () => setView(r) : undefined} /> }, { key: 'tag', label: 'الرقم' }, { key: 'name', label: 'الاسم' },
+        { key: 'payer', label: 'مين دفع', render: (r) => { const s = purchaseSource(r, { events: ctx.events, ledger: ctx.ledger, cash: ctx.cash }); if (s.from === 'partner') return <Badge tone="blue">{ctx.partners.find((p) => p.id === s.partnerId)?.name || 'شريك'}</Badge>; if (s.from === 'account') return <Badge tone="amber">الصندوق</Badge>; return r.origin === 'purchase' ? <Badge tone="gray">غير محدد</Badge> : '—'; } },
         { key: 'fam', label: 'الأم / الصغار', render: (r) => { const mom = ctx.animals.find((a) => a.id === r.motherId); const kids = ctx.animals.filter((a) => !a.voided && a.motherId === r.id); return mom || kids.length ? <div className="text-xs leading-relaxed">{mom && <div>أمها: <b>{mom.tag}</b>{mom.name ? ` (${mom.name})` : ''}</div>}{kids.length > 0 && <div>معها صغير: <b>{kids.map((k) => k.tag).join('، ')}</b></div>}</div> : (r.motherTag ? <span className="text-xs">أمها: <b>{r.motherTag}</b></span> : '—'); } },
         { key: 'category', label: 'الفئة', render: (r) => animalCatLabel(r.category) || '—' }, { key: 'sex', label: 'الجنس', hideMobile: true, render: (r) => (r.sex === 'F' ? 'أنثى' : 'ذكر') }, { key: 'breed', label: 'السلالة', hideMobile: true }, { key: 'acquisitionDate', label: 'الشراء', hideMobile: true },
         { key: 'cost', label: 'سعر الشراء', render: (r) => <span className="num">{r.acquisitionCost ? fmt(r.acquisitionCost) : '—'}</span> }, { key: 'age', label: 'العمر (شهر)', render: (r) => animalProfile(r, ctx).ageMonths ?? '—' },
@@ -315,6 +376,7 @@ export function Animals() {
       rowActions={(r) => <button className="rounded p-1.5 hover:bg-slate-100" title="تفاصيل وبيع" onClick={() => setSale(r.id)}><Info size={15} /></button>} />
     {audit && <PurchaseAudit payer={payer} onClose={() => setAudit(false)} />}
     {sale && <AnimalSale preselectId={sale === true ? null : sale} onClose={() => setSale(null)} />}
+    {card && <AnimalCard animal={card} onClose={() => setCard(null)} onEdit={(a) => { setCard(null); editRef.current?.(a); }} onSell={(a) => { setCard(null); setSale(a.id); }} />}
     {view && <Modal open onClose={() => setView(null)} title={`${view.tag} ${view.name || ''}`}><img src={view.photo} alt={view.tag} className="mx-auto max-h-[70dvh] w-full rounded-xl object-contain" /></Modal>}
   </>);
 }

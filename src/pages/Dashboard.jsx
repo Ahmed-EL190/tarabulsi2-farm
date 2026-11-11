@@ -5,7 +5,7 @@ import { ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip, CartesianG
 import { Card, Stat, Empty, Table, Badge, fmt, money, today } from '../components/ui';
 import { useCol, useSettings, useCustomLists, useStoreStatus } from '../data/db';
 import { catLabel } from '../lib/constants';
-import { herdState, cashBalances, sumByCurrency, partnerLedger, partnerDebt, operatingExpenses, salesLedger, salesTotals, round2 } from '../lib/finance';
+import { herdState, cashBalances, sumByCurrency, partnerLedger, partnerDebt, herdValue, operatingExpenses, salesLedger, salesTotals, round2 } from '../lib/finance';
 
 const COLORS = ['#2f7bd9', '#8b6fd6', '#f2a23a', '#4caf6a', '#ef5b5b', '#14b8a6'];
 
@@ -82,7 +82,7 @@ export default function Dashboard() {
     const sh = (n) => prod.filter((p) => p.shift === n).reduce((a, p) => a + Number(p.liters || 0), 0);
     return { trend, monthly, sales, salesTotal, salesMilk, salesAnimal, salesOther, expCat, bal: byCur, morning: sh('morning'), evening: sh('evening'), allday: sh('all'),
       expPeriod: sumByCurrency(operatingExpenses(exps, { from: from || undefined, to: to || undefined }), (e) => e.amount),
-      herd: Object.values(herdState(events, animalsAll)).filter((x) => x.active).length,
+      herd: Object.values(herdState(events, animalsAll)).filter((x) => x.active).length, herdCost: herdValue(animalsAll, events).byCurrency.SYP || 0,
       pBal: partners.map((p) => ({ ...p, bal: partnerLedger(p.id, ledger, { currency: 'SYP' }).closing })),
       owed: round2(partners.reduce((a, p) => a + partnerDebt(p.id, ledger).total, 0)),
       recent: [...cash].filter((c) => !c.voided && inR(c.date)).sort((a, b) => b.date.localeCompare(a.date)).slice(0, 5) };
@@ -110,7 +110,7 @@ export default function Dashboard() {
         <Stat className="col-span-2 md:col-span-1" label="الرصيد النقدي (الحالي)" value={<span className="text-base sm:text-lg">{cashLine}</span>} sub="الفعلي في الصندوق: الوارد − الصادر (لكل عملة)" icon={Wallet} tone="amber" />
         <Stat className="col-span-2 md:col-span-1" label={`إجمالي المبيعات${sfx}`} value={money(d.salesTotal)} sub={`حليب ${fmt(d.salesMilk)} + حيوانات ${fmt(d.salesAnimal)}${d.salesOther ? ` + أخرى ${fmt(d.salesOther)}` : ''} (قيمة وليست النقد المقبوض)`} icon={ShoppingCart} tone="purple" />
         <Stat label={isAll ? 'إجمالي إنتاج الحليب' : `إنتاج الحليب${sfx}`} value={`${fmt(d.morning + d.evening + d.allday)} لتر`} sub={`الصباح ${fmt(d.morning)} · المساء ${fmt(d.evening)}${d.allday ? ` · على مدار اليوم ${fmt(d.allday)}` : ''}`} icon={Droplets} tone="green" />
-        <Stat label="عدد الأبقار النشطة" value={d.herd} icon={PawPrint} tone="blue" />
+        <Stat label="عدد الأبقار النشطة" value={d.herd} sub={`بالتكلفة: ${money(d.herdCost)}`} icon={PawPrint} tone="blue" />
       </div>
 
       <div className="grid gap-4 xl:grid-cols-3">

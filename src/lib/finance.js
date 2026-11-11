@@ -4,7 +4,7 @@
 const n = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
 export const round2 = (v) => Math.round((n(v) + Number.EPSILON) * 100) / 100;
 /** تاريخ اليوم بالتوقيت المحلي (وليس UTC) كي لا يتأخر/يتقدّم يوم قرب منتصف الليل. */
-export const todayISO = () => new Date().toLocaleDateString('en-CA');
+export const todayISO = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
 const inRange = (d, from, to) => (!from || d >= from) && (!to || d <= to); // ISO yyyy-mm-dd strings compare lexically
 
 /** Sum {amount,currency} rows -> { SYP: x, USD: y } — never mixes currencies. */
@@ -372,4 +372,32 @@ export function animalProfile(animal, { events = [], production = [], expenses =
   }
   return { expectedBirthDate, daysToCalving, ageMonths, milkTotal, milkDays, milkAvg: milkDays ? round2(milkTotal / milkDays) : 0, treatmentCost,
     salePrice: sale ? n(sale.value) : null, saleDate: sale?.date || null, saleResult: sale ? round2(n(sale.value) - n(animal.acquisitionCost)) : null };
+}
+
+/** صافي رصيد عميل (مطابق لكشف حسابه): موجب = عليه لنا، سالب = له عندنا. = المستحق + الرصيد الافتتاحي − الدفعات المقدمة غير المطبَّقة. */
+export function netCustomerBalance(customerId, data, opening = 0) {
+  const p = customerPosition(customerId, data);
+  return round2(n(p.receivable) + n(opening) - n(p.unappliedCredit));
+}
+/** قيمة القطيع الحالي بتكلفة الشراء: الحيوانات الموجودة فعلاً (غير المباعة/النافقة/الملغاة) مجمَّعة لكل عملة وفئة. */
+export function herdValue(animals = [], events = []) {
+  const h = herdState(events, animals); const rows = animals.filter((a) => !a.voided && h[a.id]?.active);
+  const byCurrency = {}; const byCategory = {};
+  for (const a of rows) {
+    const c = a.currency || 'SYP'; const cost = n(a.acquisitionCost);
+    byCurrency[c] = round2((byCurrency[c] || 0) + cost);
+    const k = `${a.category || '-'}|${c}`; (byCategory[k] = byCategory[k] || { category: a.category || '-', currency: c, count: 0, cost: 0 }); byCategory[k].count++; byCategory[k].cost = round2(byCategory[k].cost + cost);
+  }
+  return { count: rows.length, rows, byCurrency, byCategory: Object.values(byCategory) };
+}
+/** من دفع ثمن شراء هذا الحيوان؟ يُستنتج من قيد حساب الشريك أو حركة الصندوق أو علامة الحدث. */
+export function purchaseSource(animal, { events = [], ledger = [], cash = [] } = {}) {
+  const ev = events.find((e) => !e.voided && e.animalId === animal.id && e.type === 'purchase' && n(e.value) > 0) || events.find((e) => !e.voided && e.animalId === animal.id && e.type === 'purchase');
+  const out = { event: ev || null, from: 'none', partnerId: null, accountId: null, amount: ev ? n(ev.value) : n(animal.acquisitionCost), date: ev?.date || animal.acquisitionDate || '' };
+  const led = ledger.find((l) => !l.voided && l.type === 'animal_purchase_paid' && !l.exchangeId && ((ev && l.eventId === ev.id) || (l.animalId === animal.id && (!ev || l.date === ev.date))));
+  if (led) return { ...out, from: 'partner', partnerId: led.partnerId, ledgerId: led.id };
+  const c = cash.find((t) => !t.voided && t.type === 'animal_purchase' && (t.animalId === animal.id || (!t.animalId && t.description === `شراء ${animal.tag}`)));
+  if (c) return { ...out, from: 'account', accountId: c.accountId, cashId: c.id };
+  if (ev?.paidFrom === 'partner' || ev?.paidFrom === 'capital') return { ...out, from: 'partner', partnerId: ev.payerPartnerId || ev.capitalPartnerId || null };
+  return out;
 }

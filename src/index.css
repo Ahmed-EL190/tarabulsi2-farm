@@ -12,7 +12,13 @@ body { @apply bg-[#f4f6f5] text-slate-800 font-sans antialiased; overflow-x: hid
 @media (max-width: 639px) {
   .input { font-size: 16px; min-height: 42px; }
   .btn { min-height: 42px; }
-  input[type="date"].input, input[type="month"].input { -webkit-appearance: none; appearance: none; text-align: right; }
+  input[type="date"].input, input[type="month"].input { min-height: 42px; text-align: right; }
   .recharts-wrapper { max-width: 100%; }
 }
 @media print { aside, header, .no-print { display: none !important; } }
+/* iOS قديم (قبل 15.4) لا يعرف وحدة dvh: نرجع لـ vh حتى لا تنكسر الشاشات ولا يختفي زر الحفظ في النوافذ */
+@supports not (height: 100dvh) {
+  .h-dvh { height: 100vh; }
+  .max-h-\[92dvh\] { max-height: 92vh; }
+  .max-h-\[70dvh\] { max-height: 70vh; }
+}
