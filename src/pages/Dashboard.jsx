@@ -5,7 +5,7 @@ import { ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip, CartesianG
 import { Card, Stat, Empty, Table, Badge, fmt, money, today } from '../components/ui';
 import { useCol, useSettings, useCustomLists, useStoreStatus } from '../data/db';
 import { catLabel } from '../lib/constants';
-import { herdState, cashBalances, sumByCurrency, partnerLedger, partnerDebt, herdValue, operatingExpenses, salesLedger, salesTotals, round2 } from '../lib/finance';
+import { herdState, cashBalances, sumByCurrency, partnerLedger, partnerDebt, herdValue, operatingExpenses, salesLedger, salesTotals, round2, longDateAr } from '../lib/finance';
 
 const COLORS = ['#2f7bd9', '#8b6fd6', '#f2a23a', '#4caf6a', '#ef5b5b', '#14b8a6'];
 
@@ -89,7 +89,7 @@ export default function Dashboard() {
   }, [prodAll, ags, dls, custs, exps, cash, partners, ledger, events, animalsAll, t, from, to]); // eslint-disable-line
   const cashLine = Object.keys(d.bal).length ? Object.entries(d.bal).map(([c, v]) => money(v, c)).join('  |  ') : money(0);
   const hasProd = d.trend.some((x) => x.morning || x.evening || x.all);
-  const long = new Date().toLocaleDateString('ar-SY', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+  const long = longDateAr();
   const quick = [['/milk-sales', 'تسجيل مبيعات الحليب', ShoppingCart], ['/expenses', 'إضافة مصروف', Receipt], ['/partners', 'تسجيل شريك جديد', UserPlus], ['/animals', 'إضافة حيوان', PawPrint], ['/reports', 'عرض التقارير', FileText]];
   const sfx = isAll ? '' : ` (${preset === 'today' ? 'اليوم' : 'الفترة'})`;
   return (

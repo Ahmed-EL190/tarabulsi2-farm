@@ -7,6 +7,13 @@ export const round2 = (v) => Math.round((n(v) + Number.EPSILON) * 100) / 100;
 export const todayISO = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
 const inRange = (d, from, to) => (!from || d >= from) && (!to || d <= to); // ISO yyyy-mm-dd strings compare lexically
 
+/** أسماء الشهور الميلادية (يناير، فبراير…) — مصدر واحد لكل الموقع. */
+export const MONTHS_AR = ['يناير', 'فبراير', 'مارس', 'أبريل', 'مايو', 'يونيو', 'يوليو', 'أغسطس', 'سبتمبر', 'أكتوبر', 'نوفمبر', 'ديسمبر'];
+/** '2026-11' ← 'نوفمبر 2026' */
+export const monthLabel = (ym) => { const m = Number(String(ym).slice(5, 7)); return MONTHS_AR[m - 1] ? `${MONTHS_AR[m - 1]} ${String(ym).slice(0, 4)}` : String(ym); };
+/** تاريخ طويل: الأربعاء 18 نوفمبر 2026 (أرقام إنجليزية وأسماء شهور ميلادية). */
+export const longDateAr = (d = new Date()) => `${new Intl.DateTimeFormat('ar', { weekday: 'long' }).format(d)} ${d.getDate()} ${MONTHS_AR[d.getMonth()]} ${d.getFullYear()}`;
+
 /** Sum {amount,currency} rows -> { SYP: x, USD: y } — never mixes currencies. */
 export function sumByCurrency(rows, pick = (r) => r.amount) {
   const out = {};
@@ -488,6 +495,27 @@ export function herdValue(animals = [], events = []) {
     const k = `${a.category || '-'}|${c}`; (byCategory[k] = byCategory[k] || { category: a.category || '-', currency: c, count: 0, cost: 0 }); byCategory[k].count++; byCategory[k].cost = round2(byCategory[k].cost + cost);
   }
   return { count: rows.length, rows, byCurrency, byCategory: Object.values(byCategory) };
+}
+/** بيانات تبادل الحيوان الوارد: ما خرج مقابله (حيوان أو أكثر) + قيمته + الفرق + من دفعه (شريك/صندوق).
+ *  diff > 0 = دفعنا فرقاً · diff < 0 = استلمنا فرقاً. يُرجع null لو الحيوان لم يدخل بتبادل. */
+export function animalExchangeInfo(animal, { events = [], ledger = [], cash = [] } = {}) {
+  const inEv = events.find((e) => !e.voided && e.animalId === animal.id && e.type === 'exchange_in'); if (!inEv) return null;
+  const exId = inEv.exchangeId;
+  const outs = exId ? events.filter((e) => !e.voided && e.exchangeId === exId && e.type === 'exchange_out').map((e) => ({ animalId: e.animalId, tag: e.tag || '', value: n(e.value) })) : [];
+  const inValue = n(inEv.value), outValue = round2(outs.reduce((t, o) => t + o.value, 0)), diff = round2(inValue - outValue);
+  const res = { exchangeId: exId, date: inEv.date, currency: inEv.currency || animal.currency || 'SYP', inValue, outs, outValue, diff, paidBy: 'none', partnerId: null, accountId: null };
+  if (!exId || diff === 0) return res;
+  if (diff > 0) {
+    const led = ledger.find((l) => !l.voided && l.type === 'animal_purchase_paid' && l.exchangeId === exId);
+    if (led) return { ...res, paidBy: 'partner', partnerId: led.partnerId };
+    const c = cash.find((t) => !t.voided && t.exchangeId === exId && t.type === 'animal_exchange_payment');
+    if (c) return { ...res, paidBy: 'account', accountId: c.accountId };
+    if (inEv.diffPaidBy) return { ...res, paidBy: 'partner', partnerId: inEv.diffPaidBy };
+  } else {
+    const c = cash.find((t) => !t.voided && t.exchangeId === exId && t.type === 'animal_exchange_receipt');
+    if (c) return { ...res, paidBy: 'account', accountId: c.accountId };
+  }
+  return res;
 }
 /** من دفع ثمن شراء هذا الحيوان؟ يُستنتج من قيد حساب الشريك أو حركة الصندوق أو علامة الحدث. */
 export function purchaseSource(animal, { events = [], ledger = [], cash = [] } = {}) {

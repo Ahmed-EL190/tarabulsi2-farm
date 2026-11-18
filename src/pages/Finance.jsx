@@ -6,7 +6,7 @@ import { Card, Table, Badge, Empty, PageHeader, Stat, Modal, money, fmt, today }
 import { useCol, useSettings, useCustomLists, saveRecord, commit, voidRecord } from '../data/db';
 import { payExpense, addExpenseWithPayment, updateExpenseSynced, updateExpensePayment, voidExpensePayment, updateCustomerPayment, voidCustomerPayment, addCustomCategory, transferCash, addOtherIncome, createLoan, repayLoan, finalizeSettlement, partnerMovement, voidExpenseCascade, voidSettlement, voidDistribution, voidCashTransactions, linkExpensesToPartners, updateLedgerEntry, voidLedgerEntry, saveExpenseEdit, updateCashMovement, cashKind } from '../data/ops';
 import { useAuth } from '../data/auth';
-import { allocateProfitByThirds, partnerInvestment, cashBalances, cashFlowSummary, expensePosition, loanPosition, partnerLedger, profitAndLoss, allocateProfit, validateShares, customerPosition, netCustomerBalance, animalPLInputs, findOrphanCash, round2, sumByCurrency } from '../lib/finance';
+import { monthLabel, allocateProfitByThirds, partnerInvestment, cashBalances, cashFlowSummary, expensePosition, loanPosition, partnerLedger, profitAndLoss, allocateProfit, validateShares, customerPosition, netCustomerBalance, animalPLInputs, findOrphanCash, round2, sumByCurrency } from '../lib/finance';
 import { CURRENCIES, METHODS, allExpenseCategories, NEW_CAT, catLabel, CASH_AR, PARTNER_EXPENSE_CATS } from '../lib/constants';
 
 const cur = { name: 'currency', label: 'العملة', type: 'select', options: CURRENCIES, required: true, default: 'SYP' };
@@ -131,8 +131,7 @@ function LinkPartnerExpenses() {
 export function Expenses() {
   const { user } = useAuth(); const [pay, setPay] = useState(null); const [pm, setPm] = useState(null); const lists = useCustomLists();
   const ctx = () => ({ pays: useCol('expensePayments').rows, cash: useCol('cashTransactions').rows, ledger: useCol('partnerCapitalTransactions').rows, loans: useCol('partnerLoans').rows, reps: useCol('partnerLoanRepayments').rows, stock: useCol('stockMovements').rows, items: useCol('stockItems').rows, customers: useCol('customers').rows });
-  const MONTHS_AR = ['كانون الثاني', 'شباط', 'آذار', 'نيسان', 'أيار', 'حزيران', 'تموز', 'آب', 'أيلول', 'تشرين الأول', 'تشرين الثاني', 'كانون الأول'];
-  const months = [...new Set(useCol('expenses').rows.filter((r) => !r.voided && /^\d{4}-\d{2}/.test(r.date || '')).map((r) => r.date.slice(0, 7)))].sort().reverse().map((m) => [m, `${MONTHS_AR[Number(m.slice(5, 7)) - 1]} ${m.slice(0, 4)}`]);
+  const months = [...new Set(useCol('expenses').rows.filter((r) => !r.voided && /^\d{4}-\d{2}/.test(r.date || '')).map((r) => r.date.slice(0, 7)))].sort().reverse().map((m) => [m, monthLabel(m)]);
   const stockNames = (c) => Object.fromEntries((c.items || []).map((i) => [i.id, i.name]));
   return (<>
     <CrudPage title="المصروفات" subtitle="فلتر بالفئة وحالة الدفع. المصروف المستحق ≠ المدفوع. الدفع من حساب أو من شريك (دون تكرار المصروف)" col="expenses" searchKeys={['description', 'supplierName']} useCtx={ctx} defaults={{ payDate: '' }} extraHeader={<LinkPartnerExpenses />}
