@@ -78,11 +78,12 @@ export const transferCash = (user, t) => { const id = newId('cashTransactions');
 export const addOtherIncome = (user, t) => commit(user, [{ col: 'cashTransactions', data: { ...t, type: 'other_income', direction: 'in' } }]);
 
 /** Finalising a settlement writes allocation entries to partner ledgers. It creates NO cash movement. */
-export async function finalizeSettlement(user, s, partners, existing = []) {
+export async function finalizeSettlement(user, s, partners, existing = [], precomputed = null) {
   if (!s.from || !s.to || s.from > s.to) throw new Error('الفترة غير صحيحة: تاريخ البداية يجب ألا يتجاوز النهاية');
   const clash = existing.find((x) => !x.voided && x.status !== 'voided' && (x.currency || 'SYP') === s.currency && !(s.to < x.from || s.from > x.to));
   if (clash) throw new Error(`هذه الفترة تتداخل مع تسوية معتمدة سابقاً (${clash.from} ← ${clash.to}). اعتماد تسويتين لنفس الأيام يكرّر توزيع الأرباح. ابدأ من اليوم التالي لآخر تسوية أو ألغِ السابقة.`);
-  const alloc = allocateProfit(s.netProfit, partners);
+  const alloc = precomputed || allocateProfit(s.netProfit, partners);
+  if (precomputed && Math.abs(alloc.reduce((a, x) => a + Number(x.amount), 0) - Number(s.netProfit)) > 0.01) throw new Error('مجموع الحصص لا يساوي صافي الربح');
   const id = newId('settlements');
   return commit(user, [
     { col: 'settlements', id, data: { ...s, allocations: alloc, status: 'finalized', approvedBy: user.uid, approvedAt: today() }, action: 'finalize' },
@@ -127,7 +128,12 @@ export async function addExpenseWithPayment(user, e, p = {}) {
   // سحب/سلفة/سداد قرض يخرج المال فوراً: يُدفع بالكامل من الصندوق ويُقيَّد في حساب الشريك حتى لو تُرك «غير مدفوع»
   if (isPartnerCat && (!p.payNow || p.payNow === 'no')) p = { ...p, payNow: 'full', source: 'account' };
   if (isPartnerCat && (p.source || 'account') === 'account' && !p.accountId) throw new Error('اختر الصندوق الذي يخرج منه المبلغ — هذا النوع يُدفع فوراً ويُقيَّد في حساب الشريك');
+  // ربط بالمخزون: شراء علف/دواء… يزيد كمية الصنف تلقائياً (حركة وارد مرتبطة بالمصروف)
+  const stockQty = Number(e.stockQty || 0);
+  if (e.stockItemId && !(stockQty > 0)) throw new Error('أدخل الكمية المشتراة لتُضاف إلى المخزون');
+  if (stockQty > 0 && !e.stockItemId) throw new Error('اختر صنف المخزون الذي ستُضاف إليه الكمية');
   const ops = [{ col: 'expenses', id, data: e }];
+  if (e.stockItemId) ops.push({ col: 'stockMovements', data: { itemId: e.stockItemId, itemName: p.stockItemName || '', date: e.date, type: 'in', qty: stockQty, expenseId: id, notes: `شراء: ${e.description || ''}` } });
   if (p.payNow && p.payNow !== 'no') {
     const amount = p.payNow === 'full' ? Number(e.amount) : Number(p.paidAmount);
     if (!(amount > 0) || amount > Number(e.amount)) throw new Error('مبلغ الدفع يجب أن يكون أكبر من صفر ولا يتجاوز قيمة المصروف');
@@ -245,8 +251,9 @@ export async function updateDelivery(user, agreement, deliveries, del, d) {
 export const voidDelivery = (user, del, reason) => commit(user, [{ col: 'milkDeliveries', id: del.id, merge: true, data: voidData(reason), action: 'void' }], 'void');
 
 // ───────────── إلغاء متسلسل: إلغاء سجل يلغي كل ما يتبعه (حتى لا يبقى أثره في الصندوق أو الأرباح) ─────────────
-export async function voidExpenseCascade(user, expense, { pays = [], cash = [], ledger = [], reps = [] } = {}, reason) {
+export async function voidExpenseCascade(user, expense, { pays = [], cash = [], ledger = [], reps = [], stock = [] } = {}, reason) {
   const ops = [{ col: 'expenses', id: expense.id, merge: true, data: voidData(reason), action: 'void' }];
+  stock.filter((m) => m.expenseId === expense.id && !m.voided).forEach((m) => ops.push({ col: 'stockMovements', id: m.id, merge: true, data: voidData(reason), action: 'void' })); // الكمية المضافة للمخزون تُلغى معه
   for (const p of pays.filter((p) => p.expenseId === expense.id && !p.voided)) {
     ops.push({ col: 'expensePayments', id: p.id, merge: true, data: voidData(reason), action: 'void' });
     cash.filter((t) => t.expensePaymentId === p.id && !t.voided).forEach((t) => ops.push({ col: 'cashTransactions', id: t.id, merge: true, data: voidData(reason), action: 'void' }));
@@ -485,7 +492,19 @@ export async function saveExpenseEdit(user, expense, d, ctx = {}) {
   const newPartner = isP ? (partnerAccountId || expense.partnerAccountId || '') : '';
   if (isP && !newPartner) throw new Error('اختر الشريك الذي يُقيَّد في حسابه (سحب / سلفة / سداد قرض)');
   const sync = { pays: ctx.pays || [], cash: ctx.cash || [], ledger: ctx.ledger || [], reps: ctx.reps || [] };
-  await updateExpenseSynced(user, expense, { ...rest, ...(isP ? { partnerAccountId: newPartner } : {}) }, sync);
+  // مزامنة المخزون (فقط لو أتى حقل صنف المخزون من نموذج التعديل): صنف فارغ = فكّ الربط
+  const stockOps = []; const extra = {};
+  if ('stockItemId' in rest) {
+    const mv = (ctx.stock || []).find((m) => m.expenseId === expense.id && !m.voided);
+    const item = rest.stockItemId || ''; const qty = rest.stockQty !== undefined && rest.stockQty !== '' ? Number(rest.stockQty) : Number(expense.stockQty || mv?.qty || 0);
+    if (item && !(qty > 0)) throw new Error('أدخل الكمية المشتراة لتُضاف إلى المخزون');
+    const name = ctx.stockNames?.[item] || mv?.itemName || '';
+    if (item) { extra.stockQty = qty; extra.stockItemName = name; const data = { itemId: item, itemName: name, date: rest.date || expense.date, type: 'in', qty, expenseId: expense.id, notes: `شراء: ${rest.description ?? expense.description ?? ''}` };
+      stockOps.push(mv ? { col: 'stockMovements', id: mv.id, merge: true, data } : { col: 'stockMovements', data }); }
+    else { extra.stockQty = null; extra.stockItemName = ''; if (mv) stockOps.push({ col: 'stockMovements', id: mv.id, merge: true, data: voidData('فكّ الربط بالمصروف'), action: 'void' }); }
+  }
+  await updateExpenseSynced(user, expense, { ...rest, ...extra, ...(isP ? { partnerAccountId: newPartner } : {}) }, sync);
+  if (stockOps.length) await commit(user, stockOps, 'update');
   if (!isP) return;
   const types = Object.values(PARTNER_EXPENSE_CATS);
   if (!expense.partnerAccountId) { // أول ربط لمصروف قائم: قيّد دفعاته في حساب الشريك

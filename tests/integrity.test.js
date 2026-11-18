@@ -70,8 +70,8 @@ describe('فحص سلامة البيانات', () => {
     let d = healthy(); d.production.push({ id: 'PR3', date: '2026-05-01', shift: 'all', liters: 22 }); expect(bad(auditData(d))).toContain('productionConflict');
     d = healthy(); d.production.push({ id: 'PR4', date: '2026-05-01', shift: 'morning', liters: 5 }); expect(find(auditData(d), 'productionConflict').items.length).toBe(1);
   });
-  it('نسب الشركاء لا تساوي 100، وبيع حيوان مرتين', () => {
-    let d = healthy(); d.partners[0].profitSharePct = 80; expect(bad(auditData(d))).toContain('shares');
+  it('لا يوجد شريك ملكية، وبيع حيوان مرتين', () => {
+    let d = healthy(); d.partners[0].ownershipPct = 0; d.partners[0].profitGroup = 'side'; expect(bad(auditData(d))).toContain('shares');
     d = healthy(); d.events.push({ id: 'S1', animalId: 'A1', tag: 'C1', type: 'sale', value: 1, date: '2026-06-01' }, { id: 'S2', animalId: 'A1', tag: 'C1', type: 'sale', value: 1, date: '2026-06-02' }); expect(bad(auditData(d))).toContain('removeWhenInactive');
   });
   it('تسويات متداخلة، وتوزيع أكبر من الحصة، وحصة لا تطابق القيد', () => {

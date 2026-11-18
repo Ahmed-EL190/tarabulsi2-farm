@@ -1,6 +1,6 @@
 export const CURRENCIES = [['SYP', 'ليرة سورية (SYP)'], ['USD', 'دولار (USD)']];
 export const METHODS = [['cash', 'نقداً'], ['bank', 'تحويل بنكي'], ['other', 'أخرى']];
-export const EXPENSE_CATEGORIES = [['feed', 'علف'], ['vet', 'دواء وعلاج'], ['labor', 'أجور عمال'], ['worker_advance', 'سلف عمال'], ['partner_advance', 'سلف شركاء (غير تشغيلي)'], ['transport', 'نقل'], ['maintenance', 'صيانة'], ['utilities', 'ماء وكهرباء'], ['fuel', 'وقود'], ['other', 'أخرى'], ['loan_principal', 'سداد أصل قرض (غير تشغيلي)'], ['partner_withdrawal', 'سحب شريك (غير تشغيلي)']];
+export const EXPENSE_CATEGORIES = [['feed', 'علف'], ['vet', 'دواء وعلاج'], ['labor', 'أجور عمال'], ['worker_advance', 'سلف عمال'], ['partner_advance', 'سلف شركاء (غير تشغيلي)'], ['transport', 'نقل'], ['maintenance', 'صيانة'], ['utilities', 'ماء وكهرباء'], ['fuel', 'وقود'], ['equipment', 'معدات (رأس مال — غير تشغيلي)'], ['other', 'أخرى'], ['loan_principal', 'سداد أصل قرض (غير تشغيلي)'], ['partner_withdrawal', 'سحب شريك (غير تشغيلي)']];
 // ── قوائم مخصّصة يضيفها المستخدم من الموقع (تُحفظ في Firestore وتُحقن هنا عبر useCustomLists) ──
 let _custom = { expense: [], animal: [] };
 export const setCustomLists = (l = {}) => { _custom = { expense: l.expense || [], animal: l.animal || [] }; };

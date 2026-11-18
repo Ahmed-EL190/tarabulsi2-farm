@@ -64,8 +64,8 @@ function Resolver({ r, D, user, onClose }) {
   }
   if (r.kind === 'partner-edit') {
     const pt = by(D.partners, r.id);
-    return <FormModal open onClose={onClose} title={`نسب ${pt.name}`} fields={[{ name: 'ownershipPct', label: 'نسبة الملكية %', type: 'number', min: 0, required: true }, { name: 'profitSharePct', label: 'نسبة الأرباح %', type: 'number', min: 0, required: true }]}
-      defaults={{ ownershipPct: pt.ownershipPct, profitSharePct: pt.profitSharePct }} onSubmit={(d) => saveRecord(user, 'partners', { ownershipPct: Number(d.ownershipPct), profitSharePct: Number(d.profitSharePct) }, pt.id)} />;
+    return <FormModal open onClose={onClose} title={`نسب ${pt.name}`} fields={[{ name: 'profitGroup', label: 'مجموعة الأرباح', type: 'select', options: [['', 'تلقائي'], ['owners', 'شريك ملكية'], ['side', 'شريك ربح فقط']] }, { name: 'ownershipPct', label: 'نسبة الملكية %', type: 'number', min: 0, required: true }, { name: 'profitSharePct', label: 'نسبته داخل ثلث مجموعته %', type: 'number', min: 0, required: true }]}
+       defaults={{ profitGroup: pt.profitGroup || '', ownershipPct: pt.ownershipPct, profitSharePct: pt.profitSharePct }} onSubmit={(d) => saveRecord(user, 'partners', { profitGroup: d.profitGroup || '', ownershipPct: Number(d.ownershipPct), profitSharePct: Number(d.profitSharePct) }, pt.id)} />;
   }
   return null;
 }

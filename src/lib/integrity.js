@@ -1,6 +1,6 @@
 // فحص سلامة البيانات: يراجع ارتباط كل شيء ببعضه (مصروفات ↔ صندوق ↔ شركاء ↔ مبيعات ↔ مواشي ↔ قروض ↔ تسويات)
 // ويرجع قائمة فحوص؛ كل فحص له بنود المشكلة وإصلاح تلقائي (إن كان آمناً). دالة نقية بلا اتصال بقاعدة البيانات.
-import { findOrphanCash, expensePosition, loanPosition, validateShares, cashBalances, partnerFundedExpenseEntry, round2, todayISO } from './finance';
+import { profitGroupOf, findOrphanCash, expensePosition, loanPosition, validateShares, cashBalances, partnerFundedExpenseEntry, round2, todayISO } from './finance';
 import { PARTNER_EXPENSE_CATS, allExpenseCategories, CASH_AR } from './constants';
 
 const n = (x) => Number(x) || 0;
@@ -113,8 +113,8 @@ export function auditData(D = {}) {
   add('unmatchedPayable', 'المواشي', 'warn', 'قيود «ثمن حيوان» في حساب شريك بلا شراء مقابل في المواشي', unmatched.map((l) => ({ text: `${l.date} — ${l.amount} ${l.currency || ''} (${PARTNER[l.partnerId]?.name || '؟'}) ${l.note || ''}`, resolve: { kind: 'ledger-edit', id: l.id } })), { hint: 'قد يكون القيد صحيحاً (شراء حُذف حدثه) أو مكرّراً. عدّل مبلغه أو احذفه من كشف الشريك.' });
 
   // ═══════════ الشركاء والقروض ═══════════
-  const act = live(partners).filter((p) => p.status !== 'inactive'); const so = validateShares(act, 'ownershipPct'), sp = validateShares(act, 'profitSharePct');
-  add('shares', 'الشركاء والقروض', 'warn', 'مجموع نسب الملكية أو الأرباح لا يساوي 100%', (so.ok && sp.ok) ? [] : act.map((p) => ({ text: `${p.name}: ملكية ${p.ownershipPct}% — أرباح ${p.profitSharePct}%  (المجموع: ملكية ${so.total}% / أرباح ${sp.total}%)`, resolve: { kind: 'partner-edit', id: p.id } })), { hint: 'يجب أن يساوي كل مجموع 100% قبل اعتماد التسوية.' });
+  const act = live(partners).filter((p) => p.status !== 'inactive'); const hasOwner = act.some((p) => profitGroupOf(p) === 'owners');
+  add('shares', 'الشركاء والقروض', 'warn', 'لا يوجد شريك ملكية فعّال — لا يمكن توزيع الأرباح', hasOwner ? [] : act.map((p) => ({ text: `${p.name}: ${profitGroupOf(p) === 'owners' ? 'ملكية' : 'ربح فقط'}`, resolve: { kind: 'partner-edit', id: p.id } })), { hint: 'حدّد «مجموعة الأرباح» = شريك ملكية لأبو وليد وعمار (أو ضع لهما نسبة ملكية).' });
   const loanBad = [];
   for (const l of live(loans)) {
     const hasL = ledLive.some((e) => e.type === 'loan_given' && e.loanId === l.id), hasC = cash.some((t) => t.type === 'loan_received' && t.loanId === l.id);

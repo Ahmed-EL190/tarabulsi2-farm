@@ -81,7 +81,7 @@ export function customerPosition(customerId, { agreements = [], deliveries = [],
 }
 
 /** Statement with running balance. Positive balance = customer owes farm; negative = customer credit. */
-export function customerStatement(customerId, { agreements, deliveries, payments, from, to, openingBalance = 0 }) {
+export function customerStatement(customerId, { agreements, deliveries, payments, from, to, openingBalance = 0, expenses = [], expensePayments = [] }) {
   const myA = new Set(agreements.filter((a) => a.customerId === customerId).map((a) => a.id));
   const lines = [];
   for (const d of deliveries) if (myA.has(d.agreementId) && !d.voided) {
@@ -90,6 +90,10 @@ export function customerStatement(customerId, { agreements, deliveries, payments
   }
   for (const p of payments) if ((p.customerId === customerId || myA.has(p.agreementId)) && !p.voided)
     lines.push(p.type === 'refund' ? { date: p.date, kind: 'refund', ref: p.id, debit: n(p.amount), credit: 0 } : { date: p.date, kind: 'payment', ref: p.id, debit: 0, credit: n(p.amount) });
+  // مشتريات آجلة من هذا الشخص كمورّد: فاتورته «له علينا» (دائن)، وما دفعناه له «عليه» (مدين) — فيظهر الصافي في نفس الكشف
+  const myE = expenses.filter((e) => e.supplierId === customerId && !e.voided); const myEIds = new Set(myE.map((e) => e.id));
+  for (const e of myE) lines.push({ date: e.date, kind: 'purchase', ref: e.id, debit: 0, credit: n(e.amount) });
+  for (const p of expensePayments) if (myEIds.has(p.expenseId) && !p.voided) lines.push({ date: p.date, kind: 'supplier_payment', ref: p.id, expenseId: p.expenseId, debit: n(p.amount), credit: 0 });
   lines.sort((a, b) => a.date.localeCompare(b.date));
   let bal = n(openingBalance);
   lines.filter((l) => from && l.date < from).forEach((l) => (bal = round2(bal + l.debit - l.credit)));
@@ -224,12 +228,16 @@ export function expensePosition(expense, payments = []) {
   const outstanding = round2(n(expense.amount) - paid);
   return { paid, outstanding, status: paid <= 0 ? 'unpaid' : outstanding > 0 ? 'partial' : outstanding === 0 ? 'paid' : 'overpaid' };
 }
+/** ما علينا لهذا المورّد (فواتير مشتريات غير مسدَّدة) بعملة واحدة. */
+export function supplierPayable(customerId, expenses = [], payments = [], currency = 'SYP') {
+  return round2(expenses.filter((e) => e.supplierId === customerId && !e.voided && (e.currency || 'SYP') === currency).reduce((t, e) => t + Math.max(0, expensePosition(e, payments).outstanding), 0));
+}
 export function validateExpensePayment(expense, payments, amount) {
   const { outstanding } = expensePosition(expense, payments);
   return n(amount) > 0 && n(amount) <= outstanding + 1e-9 ? { ok: true, outstanding } : { ok: false, outstanding };
 }
 /** Loan principal repayments and partner withdrawals are NOT operating expenses. */
-export const NON_OPERATING = new Set(['loan_principal', 'partner_withdrawal', 'partner_advance']);
+export const NON_OPERATING = new Set(['loan_principal', 'partner_withdrawal', 'partner_advance', 'equipment']); // المعدات رأس مال وليست مصروف تشغيل
 export function operatingExpenses(expenses, { from, to, currency } = {}) {
   return expenses.filter((e) => !e.voided && inRange(e.date, from, to) && (!currency || e.currency === currency) && !NON_OPERATING.has(e.category));
 }
@@ -288,6 +296,70 @@ export function allocateProfit(netProfit, partners) {
   const raw = partners.map((p) => ({ partnerId: p.id, amount: Math.floor(netProfit * n(p.profitSharePct)) / 100 }));
   raw[0].amount += round2(netProfit - raw.reduce((s, r) => s + r.amount, 0));
   return raw.map((r) => ({ ...r, amount: round2(r.amount) }));
+}
+
+// ───────────── رأس مال الشركاء + توزيع الأرباح بالأثلاث ─────────────
+/** مجموعة الشريك: owners = شريك ملكية (يدفع رأس المال ويأخذ ثلثه + ثلث المزرعة) · side = شريك ربح فقط (يشاركه ثلث الأرباح).
+ *  لو لم تُحدَّد: من له نسبة ملكية > 0 فهو من الملاك. */
+export const profitGroupOf = (p) => (p?.profitGroup === 'owners' || p?.profitGroup === 'side' ? p.profitGroup : (n(p?.ownershipPct) > 0 ? 'owners' : 'side'));
+
+/** رأس مال الشريك = ثمن البقر الذي دفعه + المعدات التي دفعها (فئة «معدات»). يُحسب تلقائياً من حسابه، حتى تاريخ `to` إن وُجد. */
+export function partnerInvestment(partnerId, { ledger = [], expenses = [], animals = [] } = {}, { currency = 'SYP', to } = {}) {
+  const gone = new Set(animals.filter((a) => a.voided).map((a) => a.id));
+  const equip = new Set(expenses.filter((e) => !e.voided && e.category === 'equipment').map((e) => e.id));
+  const mine = ledger.filter((e) => e.partnerId === partnerId && !e.voided && (e.currency || 'SYP') === currency && (!to || e.date <= to));
+  const sum = (rows) => round2(rows.reduce((t, e) => t + n(e.amount), 0));
+  const cows = sum(mine.filter((e) => e.type === 'animal_purchase_paid' && !(e.animalId && gone.has(e.animalId))));
+  const equipment = sum(mine.filter((e) => e.type === 'expense_paid_personally' && e.expenseId && equip.has(e.expenseId)));
+  return { cows, equipment, total: round2(cows + equipment) };
+}
+
+// يقسم مبلغاً على أوزان بدقة قرش واحد؛ الباقي يذهب لصاحب أكبر وزن فيكون المجموع مطابقاً تماماً.
+function splitByWeights(amount, weights) {
+  const tot = weights.reduce((a, w) => a + w, 0);
+  const raw = weights.map((w) => Math.floor((amount * w / tot) * 100) / 100);
+  const rem = round2(amount - raw.reduce((a, v) => a + v, 0));
+  raw[weights.indexOf(Math.max(...weights))] += rem;
+  return raw.map(round2);
+}
+function weightsOf(list, primary, fallback) {
+  let w = list.map(primary), basis = 'primary';
+  if (!(w.reduce((a, v) => a + v, 0) > 0) && fallback) { w = list.map(fallback); basis = 'fallback'; }
+  if (!(w.reduce((a, v) => a + v, 0) > 0)) { w = list.map(() => 1); basis = 'equal'; }
+  return { w, basis };
+}
+
+/** توزيع الربح بالأثلاث:
+ *  ثلث لشركاء الربح فقط (أبو غفير وسعيد) بحسب `profitSharePct` بينهما (متساوٍ إن لم تُحدَّد) ·
+ *  ثلث لشركاء الملكية (أبو وليد وعمار) · ثلث المزرعة يأخذه شركاء الملكية أيضاً.
+ *  الثلثان الأخيران يُقسَّمان بين الملاك بنسبة رأس مال كل واحد (`capitalById`: بقر + معدات).
+ *  تخصيص فقط — لا يُنشئ أي حركة نقدية. المجموع يساوي صافي الربح تماماً (الربح السالب يُوزَّع بنفس النسب). */
+export function allocateProfitByThirds(netProfit, partners, capitalById = {}) {
+  const owners = partners.filter((p) => profitGroupOf(p) === 'owners');
+  const side = partners.filter((p) => profitGroupOf(p) === 'side');
+  if (!owners.length) throw new Error('لا يوجد شريك ملكية (أبو وليد / عمار) لتوزيع ثلثَي الأرباح عليه');
+  const total = round2(netProfit);
+  const sideThird = side.length ? round2(total / 3) : 0;
+  const farmThird = round2(total / 3);
+  const ownersThird = round2(total - sideThird - farmThird);
+
+  const ow = weightsOf(owners, (p) => n(capitalById[p.id]), (p) => n(p.ownershipPct));
+  const ownShare = splitByWeights(ownersThird, ow.w), farmShare = splitByWeights(farmThird, ow.w);
+  const sw = weightsOf(side, (p) => n(p.profitSharePct));
+  const sideShare = side.length ? splitByWeights(sideThird, sw.w) : [];
+  const owTot = ow.w.reduce((a, v) => a + v, 0), swTot = sw.w.reduce((a, v) => a + v, 0);
+
+  const allocations = [
+    ...owners.map((p, i) => ({ partnerId: p.id, group: 'owners', capital: round2(n(capitalById[p.id])), ratioPct: round2(ow.w[i] / owTot * 100), fromOwnThird: ownShare[i], fromFarmThird: farmShare[i], amount: round2(ownShare[i] + farmShare[i]) })),
+    ...side.map((p, i) => ({ partnerId: p.id, group: 'side', capital: 0, ratioPct: round2(sw.w[i] / swTot * 100), fromOwnThird: sideShare[i], fromFarmThird: 0, amount: sideShare[i] })),
+  ];
+  return { allocations, breakdown: { sideThird, ownersThird, farmThird, ownersBasis: ow.basis === 'primary' ? 'capital' : ow.basis === 'fallback' ? 'ownership' : 'equal' } };
+}
+/** النسبة الفعلية لكل شريك من إجمالي الأرباح (للعرض): { partnerId: % } */
+export function effectiveProfitShares(partners, capitalById = {}) {
+  if (!partners.some((p) => profitGroupOf(p) === 'owners')) return {};
+  const { allocations } = allocateProfitByThirds(1000000, partners, capitalById);
+  return Object.fromEntries(allocations.map((a) => [a.partnerId, round2(a.amount / 10000)]));
 }
 
 /** مدخلات الأرباح الخاصة بالمواشي — مصدر واحد للتسويات والتقارير. */
@@ -372,6 +444,33 @@ export function animalProfile(animal, { events = [], production = [], expenses =
   }
   return { expectedBirthDate, daysToCalving, ageMonths, milkTotal, milkDays, milkAvg: milkDays ? round2(milkTotal / milkDays) : 0, treatmentCost,
     salePrice: sale ? n(sale.value) : null, saleDate: sale?.date || null, saleResult: sale ? round2(n(sale.value) - n(animal.acquisitionCost)) : null };
+}
+
+// ───────────── تسمين العجول: وزن + علف + حليب + بنود أخرى لكل عجل ─────────────
+/** logs: [{calfId,date,type:'arrival_weight'|'weight'|'feed'|'milk'|'other',qty,unit,item}] — الاستهلاك يُجمَع ضمن الفترة [from,to]،
+ *  والوزن: بداية = آخر وزن في/قبل `from` (أو أول وزن مسجَّل)، نهاية = آخر وزن في/قبل `to`. */
+export function calfFattening(calfId, logs = [], { from, to } = {}) {
+  const mine = logs.filter((l) => l.calfId === calfId && !l.voided);
+  const byDate = (a, b) => a.date.localeCompare(b.date);
+  const ws = mine.filter((l) => l.type === 'arrival_weight' || l.type === 'weight').sort(byDate);
+  const upTo = (d) => ws.filter((w) => !d || w.date <= d);
+  const before = from ? ws.filter((w) => w.date <= from) : [];
+  const startW = before.length ? before[before.length - 1] : ws[0] || null;
+  const endList = upTo(to); const endW = endList.length ? endList[endList.length - 1] : null;
+  const gain = startW && endW && endW !== startW ? round2(n(endW.qty) - n(startW.qty)) : null;
+  const days = startW && endW && endW !== startW ? daysBetween(startW.date, endW.date) : 0;
+  const inR = mine.filter((l) => inRange(l.date, from, to));
+  const sumOf = (rows) => round2(rows.reduce((t, l) => t + n(l.qty), 0));
+  const feedRows = inR.filter((l) => l.type === 'feed'), milkRows = inR.filter((l) => l.type === 'milk');
+  const group = (rows, key) => { const o = {}; for (const l of rows) { const k = key(l); o[k] = round2((o[k] || 0) + n(l.qty)); } return o; };
+  const feed = sumOf(feedRows), milk = sumOf(milkRows);
+  return {
+    startWeight: startW ? n(startW.qty) : null, startDate: startW?.date || null, endWeight: endW ? n(endW.qty) : null, endDate: endW?.date || null,
+    gain, days, dailyGain: gain !== null && days > 0 ? round2(gain / days) : null,
+    feed, feedByItem: group(feedRows, (l) => l.item || 'علف'), milk,
+    other: group(inR.filter((l) => l.type === 'other'), (l) => `${l.item || '—'}${l.unit ? ` (${l.unit})` : ''}`),
+    feedPerKgGain: gain > 0 ? round2(feed / gain) : null, // كغ علف لكل كغ زيادة وزن
+  };
 }
 
 /** صافي رصيد عميل (مطابق لكشف حسابه): موجب = عليه لنا، سالب = له عندنا. = المستحق + الرصيد الافتتاحي − الدفعات المقدمة غير المطبَّقة. */

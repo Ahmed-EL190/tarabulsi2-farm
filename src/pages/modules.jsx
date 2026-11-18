@@ -8,7 +8,7 @@ import { Card, Stat, Table, Badge, Modal, Empty, PageHeader, Avatar, money, fmt,
 import { useCol, useSettings, useCustomLists, createAnimal, saveRecord, commit, newId } from '../data/db';
 import { recordAnimalEvent, partnerMovement, voidAnimalCascade, voidAnimalEventCascade, animalPurchasePayment, linkPurchasesToPartner, voidInitialCapital, repayPartner, switchExchangeDiffToPartner, voidCashTransactions, addCustomCategory, updateLedgerEntry, voidLedgerEntry, changePurchasePayer, changePurchasePrice } from '../data/ops';
 import { useAuth } from '../data/auth';
-import { customerPosition, customerStatement, partnerLedger, herdState, animalExchange, validateNewAnimal, animalProfile, partnerDebt, cashBalances, herdValue, purchaseSource, round2, LEDGER_TYPES } from '../lib/finance';
+import { customerPosition, customerStatement, partnerLedger, herdState, animalExchange, validateNewAnimal, animalProfile, partnerDebt, cashBalances, herdValue, purchaseSource, round2, LEDGER_TYPES, partnerInvestment, effectiveProfitShares, profitGroupOf, calfFattening, monthsBetween, supplierPayable } from '../lib/finance';
 import { CURRENCIES, LEDGER_AR, allAnimalCategories, animalCatLabel, NEW_CAT } from '../lib/constants';
 const animalOpt = (r) => `${r.tag}${r.name ? ' - ' + r.name : ''}`;
 
@@ -63,15 +63,17 @@ export function Production() {
 // ───────── العملاء
 function StatementModal({ customer, onClose }) {
   const s = useSettings();
-  const ags = useCol('milkSales').rows, dls = useCol('milkDeliveries').rows, pays = useCol('customerPayments').rows;
+  const ags = useCol('milkSales').rows, dls = useCol('milkDeliveries').rows, pays = useCol('customerPayments').rows, exps = useCol('expenses').rows, epays = useCol('expensePayments').rows;
   const [from, setFrom] = useState(''); const [to, setTo] = useState(''); const [cur2, setCur2] = useState('SYP');
   const inCur = (x) => (x.currency || 'SYP') === cur2;
-  const st = useMemo(() => customerStatement(customer.id, { agreements: ags.filter(inCur), deliveries: dls, payments: pays.filter(inCur), from, to, openingBalance: cur2 === 'SYP' ? Number(customer.openingBalance || 0) : 0 }), [customer, ags, dls, pays, from, to, cur2]); // eslint-disable-line
+  const st = useMemo(() => customerStatement(customer.id, { agreements: ags.filter(inCur), deliveries: dls, payments: pays.filter(inCur), expenses: exps.filter(inCur), expensePayments: epays, from, to, openingBalance: cur2 === 'SYP' ? Number(customer.openingBalance || 0) : 0 }), [customer, ags, dls, pays, exps, epays, from, to, cur2]); // eslint-disable-line
   // الرصيد: موجب = العميل عليه لنا (مدين) · سالب = للعميل رصيد عندنا (دائن)
   const side = (b) => (b > 0.004 ? `عليه ${fmt(b)}` : b < -0.004 ? `له ${fmt(-b)}` : 'متزن');
   const tone = (b) => (b > 0.004 ? 'text-rose-600' : b < -0.004 ? 'text-sky-700' : 'text-slate-500');
   const agNo = (id) => ags.find((a) => a.id === id)?.number || '';
   const describe = (r) => {
+    if (r.kind === 'purchase') { const e = exps.find((x) => x.id === r.ref); return `مشتريات منه (فاتورة): ${e?.description || ''}`; }
+    if (r.kind === 'supplier_payment') { const e = exps.find((x) => x.id === r.expenseId); return `دفعنا له: ${e?.description || ''}`; }
     if (r.kind === 'delivery') return `تسليم ${fmt(r.qty)} لتر${agNo(r.ref) ? ' — ' + agNo(r.ref) : ''}`;
     const p = pays.find((x) => x.id === r.ref); const no = agNo(p?.agreementId);
     return `${r.kind === 'refund' ? 'استرداد للعميل' : 'دفعة من العميل'}${no ? ' — ' + no : ''}${p?.note ? ' (' + p.note + ')' : ''}`;
@@ -79,7 +81,7 @@ function StatementModal({ customer, onClose }) {
   const rows = [{ id: 'open', date: from || '—', desc: 'رصيد افتتاحي', qty: '', price: '', debit: 0, credit: 0, balance: st.opening }, ...st.rows.map((r, i) => ({ id: i, date: r.date, desc: describe(r), qty: r.kind === 'delivery' ? r.qty : '', price: r.kind === 'delivery' && r.qty ? round2(r.debit / r.qty) : '', debit: r.debit, credit: r.credit, balance: r.balance }))]
     .map((r) => ({ ...r, balLabel: side(r.balance) }));
   const closingTxt = st.closing > 0.004 ? `العميل عليه لنا ${money(st.closing, cur2)}` : st.closing < -0.004 ? `للعميل عندنا ${money(-st.closing, cur2)} (رصيد دائن)` : `الحساب متزن بالـ${cur2 === 'USD' ? 'دولار' : 'ليرة'} — لا يوجد رصيد`;
-  const report = { farm: s.farmName, title: `كشف حساب العميل - ${customer.name} (${cur2})`, from, to, currency: cur2, columns: [{ key: 'date', label: 'التاريخ', type: 'date' }, { key: 'desc', label: 'البيان' }, { key: 'qty', label: 'الكمية (لتر)', type: 'number' }, { key: 'price', label: 'سعر اللتر', type: 'money' }, { key: 'debit', label: 'مدين (عليه — مبيعات)', type: 'money' }, { key: 'credit', label: 'دائن (له — مدفوعات)', type: 'money' }, { key: 'balance', label: 'الرصيد', type: 'money' }, { key: 'balLabel', label: 'عليه / له' }],
+  const report = { farm: s.farmName, title: `كشف حساب العميل - ${customer.name} (${cur2})`, from, to, currency: cur2, columns: [{ key: 'date', label: 'التاريخ', type: 'date' }, { key: 'desc', label: 'البيان' }, { key: 'qty', label: 'الكمية (لتر)', type: 'number' }, { key: 'price', label: 'سعر اللتر', type: 'money' }, { key: 'debit', label: 'مدين (عليه — مبيعات / ما دفعناه له)', type: 'money' }, { key: 'credit', label: 'دائن (له — مدفوعات / فواتير مشترياتنا منه)', type: 'money' }, { key: 'balance', label: 'الرصيد', type: 'money' }, { key: 'balLabel', label: 'عليه / له' }],
     rows, totals: { debit: st.totalDebit, credit: st.totalCredit }, summary: [{ label: 'الرصيد الافتتاحي', value: st.opening }, { label: 'الرصيد الختامي (موجب = العميل عليه لنا، سالب = له عندنا)', value: st.closing }, { label: 'الخلاصة', value: closingTxt }] };
   const ui = [{ key: 'date', label: 'التاريخ' }, { key: 'desc', label: 'البيان' }, { key: 'qty', label: 'الكمية (لتر)', render: (r) => (r.qty === '' ? '—' : <span className="num">{fmt(r.qty)}</span>) }, { key: 'price', label: 'سعر اللتر', render: (r) => (r.price === '' ? '—' : <span className="num">{fmt(r.price)}</span>) },
     { key: 'debit', label: 'مدين (عليه)', render: (r) => (r.debit ? <span className="num font-bold text-rose-600">{fmt(r.debit)}</span> : '—') }, { key: 'credit', label: 'دائن (له)', render: (r) => (r.credit ? <span className="num font-bold text-emerald-700">{fmt(r.credit)}</span> : '—') },
@@ -87,8 +89,8 @@ function StatementModal({ customer, onClose }) {
   return (
     <Modal open onClose={onClose} title={report.title} wide>
       <div className={`mb-3 rounded-xl p-3 text-center text-base font-extrabold sm:text-lg ${st.closing > 0.004 ? 'bg-rose-50 text-rose-700' : st.closing < -0.004 ? 'bg-sky-50 text-sky-700' : 'bg-slate-50 text-slate-600'}`}>{closingTxt}</div>
-      <div className="mb-3 grid grid-cols-3 gap-2"><Stat label="رصيد افتتاحي" value={<span className="text-base">{fmt(st.opening)}</span>} /><Stat label="مدين (مبيعات)" value={<span className="text-base">{fmt(st.totalDebit)}</span>} tone="red" /><Stat label="دائن (مدفوعات)" value={<span className="text-base">{fmt(st.totalCredit)}</span>} tone="green" /></div>
-      <div className="mb-1 text-xs text-slate-500"><b className="text-rose-600">عليه</b> = العميل مدين لنا · <b className="text-sky-700">له</b> = رصيد للعميل عندنا (دفعات زائدة / مقدّمة)</div>
+      <div className="mb-3 grid grid-cols-3 gap-2"><Stat label="رصيد افتتاحي" value={<span className="text-base">{fmt(st.opening)}</span>} /><Stat label="مدين (عليه)" value={<span className="text-base">{fmt(st.totalDebit)}</span>} tone="red" /><Stat label="دائن (له)" value={<span className="text-base">{fmt(st.totalCredit)}</span>} tone="green" /></div>
+      <div className="mb-1 text-xs text-slate-500"><b className="text-rose-600">عليه</b> = العميل مدين لنا · <b className="text-sky-700">له</b> = رصيد له عندنا (دفعات مقدّمة، أو علف/مشتريات أخذناها منه ولم ندفعها)</div>
       <div className="mb-3 mt-2 grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:items-end"><label className="col-span-2 block sm:col-span-1"><span className="mb-1 block text-xs font-bold text-slate-500">العملة</span><select className="input sm:w-32" value={cur2} onChange={(e) => setCur2(e.target.value)}>{CURRENCIES.map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select></label><label className="block"><span className="mb-1 block text-xs font-bold text-slate-500">من تاريخ</span><input type="date" dir="ltr" className="input sm:w-40" value={from} onChange={(e) => setFrom(e.target.value)} /></label><label className="block"><span className="mb-1 block text-xs font-bold text-slate-500">إلى تاريخ</span><input type="date" dir="ltr" className="input sm:w-40" value={to} onChange={(e) => setTo(e.target.value)} /></label><div className="col-span-2"><ExportButtons report={report} /></div></div>
       <Table columns={ui} rows={rows}
         footer={<tr><td className="px-3 py-2" colSpan={4}>الإجمالي</td><td className="px-3 py-2 num">{fmt(st.totalDebit)}</td><td className="px-3 py-2 num">{fmt(st.totalCredit)}</td><td className={`px-3 py-2 font-extrabold ${tone(st.closing)}`}>{side(st.closing)}</td></tr>} />
@@ -97,17 +99,18 @@ function StatementModal({ customer, onClose }) {
 }
 export function Customers() {
   const [stm, setStm] = useState(null);
-  const ctx = () => ({ ags: useCol('milkSales').rows, dls: useCol('milkDeliveries').rows, pays: useCol('customerPayments').rows });
+  const ctx = () => ({ ags: useCol('milkSales').rows, dls: useCol('milkDeliveries').rows, pays: useCol('customerPayments').rows, exps: useCol('expenses').rows, epays: useCol('expensePayments').rows });
   return (<>
     <CrudPage title="العملاء والديون المدينة" subtitle="سجل العملاء والذمم والدفعات المقدمة" col="customers" searchKeys={['name', 'phone']} useCtx={ctx}
       fields={[{ name: 'name', label: 'الاسم', type: 'text', required: true }, { name: 'phone', label: 'الهاتف', type: 'text' }, { name: 'address', label: 'العنوان', type: 'text' }, { name: 'status', label: 'الحالة', type: 'select', options: [['active', 'نشط'], ['inactive', 'غير نشط']], required: true, default: 'active' }, { name: 'openingBalance', label: 'رصيد افتتاحي مدين (ل.س) — اختياري', type: 'number' }, { name: 'notes', label: 'ملاحظات', type: 'textarea' }]}
-      cols={({ ags, dls, pays }) => {
+      cols={({ ags, dls, pays, exps, epays }) => {
         // كل عملة على حدة — لا نجمع ليرة مع دولار أبداً
         const per = (r) => CURRENCIES.map(([c]) => { const p = customerPosition(r.id, { agreements: ags.filter((a) => (a.currency || 'SYP') === c), deliveries: dls, payments: pays.filter((x) => (x.currency || 'SYP') === c) }); return { c, rec: round2(p.receivable + (c === 'SYP' ? Number(r.openingBalance || 0) : 0)), cr: p.unappliedCredit }; });
         const show = (r, k, cls) => { const items = per(r).filter((x) => x[k] !== 0); return items.length ? <div className="space-y-0.5">{items.map((x) => <div key={x.c} className={`num font-bold ${cls(x[k])}`}>{money(x[k], x.c)}</div>)}</div> : <b className="num text-slate-400">0</b>; };
         return [{ key: 'name', label: 'العميل' }, { key: 'phone', label: 'الهاتف' }, { key: 'status', label: 'الحالة', render: (r) => <Badge tone={r.status === 'active' ? 'green' : 'gray'}>{r.status === 'active' ? 'نشط' : 'غير نشط'}</Badge> },
           { key: 'rec', label: 'الذمم المدينة (عليه)', render: (r) => show(r, 'rec', (v) => (v > 0 ? 'text-rose-600' : 'text-sky-700')) },
-          { key: 'cr', label: 'دفعات مقدمة غير مطبّقة (له)', render: (r) => show(r, 'cr', () => 'text-emerald-700') }];
+          { key: 'cr', label: 'دفعات مقدمة غير مطبّقة (له)', render: (r) => show(r, 'cr', () => 'text-emerald-700') },
+          { key: 'sp', label: 'مشتريات منه لم ندفعها (له علينا)', render: (r) => { const it = CURRENCIES.map(([c]) => [c, supplierPayable(r.id, exps, epays, c)]).filter(([, v]) => v > 0); return it.length ? <div className="space-y-0.5">{it.map(([c, v]) => <div key={c} className="num font-bold text-amber-700">{money(v, c)}</div>)}</div> : <b className="num text-slate-400">0</b>; } }];
       }}
       rowActions={(r) => <button className="rounded p-1.5 hover:bg-slate-100" title="كشف حساب" onClick={() => setStm(r)}><FileText size={15} /></button>} />
     {stm && <StatementModal customer={stm} onClose={() => setStm(null)} />}
@@ -158,13 +161,14 @@ function LedgerModal({ partner, onClose }) {
 export function Partners() {
   const { user, can } = useAuth(); const [led, setLed] = useState(null); const [pay, setPay] = useState(null);
   return (<>
-    <CrudPage title="الشركاء" subtitle="حساب كل شريك = سلف أعطاها للمزرعة + ثمن حيوانات دفعها من ماله. يزيد تلقائياً مع كل قرض/شراء، وتُسدَّد له من الصندوق (السلف أولاً)." col="partners" searchKeys={['name', 'phone']}
-      useCtx={() => ({ led: useCol('partnerCapitalTransactions').rows, loans: useCol('partnerLoans').rows, reps: useCol('partnerLoanRepayments').rows, cash: useCol('cashTransactions').rows })}
+    <CrudPage title="الشركاء" subtitle="رأس مال الشريك (بقر + معدات) يُحسب تلقائياً مما يدفعه من ماله، وعليه تُقسَّم الأرباح: ثلث لشركاء الربح فقط، وثلث لشركاء الملكية، وثلث المزرعة لشركاء الملكية أيضاً." col="partners" searchKeys={['name', 'phone']}
+      useCtx={() => ({ led: useCol('partnerCapitalTransactions').rows, loans: useCol('partnerLoans').rows, reps: useCol('partnerLoanRepayments').rows, cash: useCol('cashTransactions').rows, exps: useCol('expenses').rows, animals: useCol('animals').rows, partners: useCol('partners').rows })}
       extraHeader={<ResetCapital />}
-      fields={[{ name: 'name', label: 'الاسم', type: 'text', required: true }, { name: 'phone', label: 'الهاتف / التواصل', type: 'text' }, { name: 'ownershipPct', label: 'نسبة الملكية %', type: 'number', min: 0, required: true }, { name: 'profitSharePct', label: 'نسبة الأرباح %', type: 'number', min: 0, required: true }, { name: 'joinDate', label: 'تاريخ الانضمام', type: 'date' }, { name: 'status', label: 'الحالة', type: 'select', options: [['active', 'نشط'], ['inactive', 'غير نشط']], required: true, default: 'active' }, { name: 'notes', label: 'ملاحظات', type: 'textarea' }]}
-      summary={(rows, ctx) => { const o = round2(rows.reduce((a, p) => a + Number(p.ownershipPct || 0), 0)), pr = round2(rows.reduce((a, p) => a + Number(p.profitSharePct || 0), 0));
+      fields={[{ name: 'name', label: 'الاسم', type: 'text', required: true }, { name: 'phone', label: 'الهاتف / التواصل', type: 'text' }, { name: 'profitGroup', label: 'مجموعة الأرباح', type: 'select', options: [['', 'تلقائي (من له نسبة ملكية = شريك ملكية)'], ['owners', 'شريك ملكية — يدفع رأس المال (أبو وليد / عمار)'], ['side', 'شريك ربح فقط — ثلث الأرباح (أبو غفير / سعيد)']] }, { name: 'ownershipPct', label: 'نسبة الملكية % (احتياطية — الفعلية تُحسب من رأس المال)', type: 'number', min: 0, required: true }, { name: 'profitSharePct', label: 'نسبته داخل ثلث مجموعته % (لشريك الربح فقط؛ 50 و50 بين أبو غفير وسعيد)', type: 'number', min: 0, required: true }, { name: 'joinDate', label: 'تاريخ الانضمام', type: 'date' }, { name: 'status', label: 'الحالة', type: 'select', options: [['active', 'نشط'], ['inactive', 'غير نشط']], required: true, default: 'active' }, { name: 'notes', label: 'ملاحظات', type: 'textarea' }]}
+      summary={(rows, ctx) => { const act = rows.filter((p) => !p.voided && p.status !== 'inactive'); const inv = Object.fromEntries(act.map((p) => [p.id, partnerInvestment(p.id, { ledger: ctx.led, expenses: ctx.exps, animals: ctx.animals })]));
+        const owners = act.filter((p) => profitGroupOf(p) === 'owners'); const capAll = round2(owners.reduce((a, p) => a + inv[p.id].total, 0)); const eqAll = round2(owners.reduce((a, p) => a + inv[p.id].equipment, 0));
         const debts = rows.map((p) => partnerDebt(p.id, ctx.led)); const S = (k) => round2(debts.reduce((a, x) => a + x[k], 0));
-        return rows.length ? <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-6"><Stat label="مجموع نسب الملكية" value={`${o}%`} tone={o === 100 ? 'green' : 'amber'} /><Stat label="مجموع نسب الأرباح" value={`${pr}%`} tone={pr === 100 ? 'green' : 'red'} />
+        return rows.length ? <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-6"><Stat label="رأس مال المشروع (بقر + معدات)" value={<span className="text-base sm:text-xl">{money(capAll)}</span>} tone={owners.length ? 'green' : 'red'} /><Stat label="منها معدات" value={<span className="text-base sm:text-xl">{money(eqAll)}</span>} />
           <Stat label="سلف مستحقة للشركاء" value={<span className="text-base sm:text-xl">{money(S('loans'))}</span>} tone="amber" /><Stat label="ثمن بقر وفروق تبادل مستحقة" value={<span className="text-base sm:text-xl">{money(S('purchases'))}</span>} tone="amber" /><Stat label="مصروفات/مبالغ دفعوها" value={<span className="text-base sm:text-xl">{money(S('other'))}</span>} tone="amber" /><Stat label="إجمالي المستحق للشركاء" value={<span className="text-base sm:text-xl">{money(S('total'))}</span>} tone="red" /></div> : null; }}
       cols={(ctx) => [{ key: 'name', label: 'الشريك' }, { key: 'phone', label: 'التواصل', hideMobile: true },
         { key: 'ln', label: 'سلف مستحقة', render: (r) => <span className="num">{fmt(partnerDebt(r.id, ctx.led).loans)}</span> },
@@ -172,7 +176,9 @@ export function Partners() {
         { key: 'ot', label: 'مصروفات/مبالغ دفعها', render: (r) => <span className="num">{fmt(partnerDebt(r.id, ctx.led).other)}</span> },
         { key: 'wd', label: 'سحوبات وسلف أخذها', render: (r) => { const x = partnerDebt(r.id, ctx.led); return <span className="num">{fmt(x.withdrawals + x.advances)}</span>; } },
         { key: 'tt', label: 'إجمالي المستحق له', render: (r) => <b className="num text-rose-600">{fmt(partnerDebt(r.id, ctx.led).total)}</b> },
-        { key: 'ownershipPct', label: 'الملكية', render: (r) => `${r.ownershipPct}%` }, { key: 'profitSharePct', label: 'الأرباح', render: (r) => `${r.profitSharePct}%` }, { key: 'status', label: 'الحالة', hideMobile: true, render: (r) => <Badge tone={r.status === 'active' ? 'green' : 'gray'}>{r.status === 'active' ? 'نشط' : 'غير نشط'}</Badge> }]}
+        { key: 'cap', label: 'رأس ماله (بقر + معدات)', render: (r) => (profitGroupOf(r) === 'owners' ? <span className="num">{fmt(partnerInvestment(r.id, { ledger: ctx.led, expenses: ctx.exps, animals: ctx.animals }).total)}</span> : '—') },
+        { key: 'share', label: 'حصته من الأرباح', render: (r) => { const act = (ctx.partners || []).filter((p) => !p.voided && p.status !== 'inactive'); const cap = Object.fromEntries(act.map((p) => [p.id, partnerInvestment(p.id, { ledger: ctx.led, expenses: ctx.exps, animals: ctx.animals }).total])); const v = effectiveProfitShares(act, cap)[r.id]; return <b className="num">{v === undefined ? '—' : `${v}%`}</b>; } },
+        { key: 'status', label: 'الحالة', hideMobile: true, render: (r) => <Badge tone={r.status === 'active' ? 'green' : 'gray'}>{r.status === 'active' ? 'نشط' : 'غير نشط'}</Badge> }]}
       rowActions={(r, ctx) => <>
         <button className="rounded p-1.5 hover:bg-slate-100" title="دفتر الشريك" onClick={() => setLed(r)}><BookOpen size={15} /></button>
         {can('create') && partnerDebt(r.id, ctx.led).total > 0 && <button className="rounded p-1.5 text-emerald-700 hover:bg-emerald-50" title="سداد للشريك من الصندوق" onClick={() => setPay({ p: r, ctx })}><HandCoins size={15} /></button>}</>} />
@@ -295,9 +301,9 @@ function HerdValue() {
 /** صفحة «المواشي»: كل ما يخص القطيع في مكان واحد بتبويبات (القطيع، المواليد والوفيات، التبادل، قيمة القطيع). */
 export function Livestock({ initial = 'herd' }) {
   const [tab, setTab] = useState(initial);
-  const tabs = [['herd', 'القطيع'], ['events', 'المواليد والوفيات'], ['exchange', 'تبادل ونقل'], ['value', 'قيمة القطيع']];
+  const tabs = [['herd', 'القطيع'], ['events', 'المواليد والوفيات'], ['exchange', 'تبادل ونقل'], ['value', 'قيمة القطيع'], ['fatten', 'تسمين العجول']];
   return (<div><div className="mb-4 flex flex-wrap gap-2">{tabs.map(([k, l]) => <button key={k} className={`btn ${tab === k ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setTab(k)}>{l}</button>)}</div>
-    {tab === 'herd' && <Animals />}{tab === 'events' && <AnimalEvents />}{tab === 'exchange' && <Exchange />}{tab === 'value' && <HerdValue />}</div>);
+    {tab === 'herd' && <Animals />}{tab === 'events' && <AnimalEvents />}{tab === 'exchange' && <Exchange />}{tab === 'value' && <HerdValue />}{tab === 'fatten' && <CalfFattening />}</div>);
 }
 export function Animals() {
   const [sale, setSale] = useState(null); // null | true | animalId
@@ -406,6 +412,60 @@ export function AnimalEvents() {
       await recordAnimalEvent(u, { animalId, tag, type: d.type, date: d.date, value: v, currency: d.currency, motherId: d.motherId || '', notes: d.notes || '', ...pp.extra }, cash, pp.ledger); }}
     cols={() => [{ key: 'date', label: 'التاريخ' }, { key: 'type', label: 'الحدث', render: (r) => <Badge tone={r.type === 'death' ? 'red' : r.type === 'birth' ? 'green' : 'blue'}>{EVT_AR[r.type]}</Badge> }, { key: 'tag', label: 'الحيوان' }, { key: 'value', label: 'القيمة', render: (r) => (r.value ? <span className="num">{fmt(r.value)} {r.currency}</span> : '—') }, { key: 'notes', label: 'ملاحظات' }]} />
     {sale && <AnimalSale onClose={() => setSale(false)} />}</>);
+}
+// ───────── تسمين العجول
+const CALF_TYPES = [['arrival_weight', 'وزن عند الوصول / الميلاد (جاء مع أمه)'], ['weight', 'وزن دوري'], ['feed', 'علف مستهلك'], ['milk', 'حليب مستهلك'], ['other', 'بند آخر (دواء، مكمّل، …)']];
+const CALF_AR = { arrival_weight: 'وزن الوصول', weight: 'وزن دوري', feed: 'علف', milk: 'حليب', other: 'بند آخر' };
+const CALF_UNIT = { arrival_weight: 'كغ', weight: 'كغ', feed: 'كغ', milk: 'لتر' };
+const objText = (o) => Object.entries(o || {}).map(([k, v]) => `${k}: ${fmt(v)}`).join('، ');
+/** عجول تسمين: وزن عند الوصول + أوزان دورية + علف وحليب وبنود أخرى لكل عجل، مع ملخص استهلاك لأي فترة (مثلاً بعد 5 أشهر). */
+export function CalfFattening() {
+  const s = useSettings(); const animals = useCol('animals').rows; const events = useCol('animalEvents').rows; const logs = useCol('calfLogs').rows.filter((l) => !l.voided);
+  const [from, setFrom] = useState(''); const [to, setTo] = useState(''); const [calfId, setCalfId] = useState('');
+  const herd = herdState(events, animals);
+  const isCalf = (a) => !!herd[a.id]?.active && (a.category === 'heifer_calf' || !!a.motherId || (!!a.birthDate && monthsBetween(a.birthDate, today()) <= 12));
+  const ids = [...new Set(logs.map((l) => l.calfId))].filter((id) => animals.some((a) => a.id === id && !a.voided) && (!calfId || id === calfId));
+  const tagOf = (id) => { const a = animals.find((x) => x.id === id); return a ? animalLabel(a) : '—'; };
+  const sum = ids.map((id) => ({ id, name: tagOf(id), ...calfFattening(id, logs, { from, to }) })).sort((a, b) => a.name.localeCompare(b.name));
+  const report = { farm: s.farmName, title: `ملخص تسمين العجول${from || to ? ` (${from || '…'} ← ${to || '…'})` : ''}`, columns: [{ key: 'name', label: 'العجل' }, { key: 'startWeight', label: 'وزن البداية (كغ)' }, { key: 'endWeight', label: 'آخر وزن (كغ)' }, { key: 'gain', label: 'الزيادة (كغ)' }, { key: 'dailyGain', label: 'الزيادة اليومية (كغ)' }, { key: 'feed', label: 'العلف (كغ)' }, { key: 'milk', label: 'الحليب (لتر)' }, { key: 'otherTxt', label: 'بنود أخرى' }], rows: sum.map((r) => ({ ...r, otherTxt: objText(r.other) })) };
+  const unit = (t) => CALF_UNIT[t] || '';
+  const norm = (d, a) => ({ calfId: d.calfId, tag: a?.tag || '', date: d.date, type: d.type, qty: Number(d.qty), unit: unit(d.type) || String(d.unit || '').trim(), item: ['feed', 'other'].includes(d.type) ? String(d.item || '').trim() : '', notes: d.notes || '' });
+  const check = (d) => { if (!d.calfId) throw new Error('اختر العجل'); if (!(Number(d.qty) > 0)) throw new Error('أدخل رقماً أكبر من صفر'); if (d.type === 'other' && !String(d.item || '').trim()) throw new Error('اكتب اسم البند'); };
+  const inView = (r) => (!calfId || r.calfId === calfId) && (!from || r.date >= from) && (!to || r.date <= to);
+  return (<div className="space-y-4">
+    <Card title="ملخص استهلاك العجول" action={<ExportButtons report={report} />}>
+      <div className="mb-3 grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:items-end">
+        <label className="block"><span className="mb-1 block text-xs font-bold text-slate-500">من</span><input type="date" dir="ltr" className="input sm:w-40" value={from} onChange={(e) => setFrom(e.target.value)} /></label>
+        <label className="block"><span className="mb-1 block text-xs font-bold text-slate-500">إلى</span><input type="date" dir="ltr" className="input sm:w-40" value={to} onChange={(e) => setTo(e.target.value)} /></label>
+        <label className="col-span-2 block sm:col-span-1"><span className="mb-1 block text-xs font-bold text-slate-500">العجل</span><select className="input sm:w-56" value={calfId} onChange={(e) => setCalfId(e.target.value)}><option value="">كل العجول</option>{[...new Set(logs.map((l) => l.calfId))].map((id) => <option key={id} value={id}>{tagOf(id)}</option>)}</select></label>
+        {(from || to || calfId) && <button type="button" className="btn btn-ghost !py-2 text-xs" onClick={() => { setFrom(''); setTo(''); setCalfId(''); }}>مسح</button>}
+      </div>
+      <Table rows={sum} empty={<Empty title="لا توجد بيانات تسمين بعد" hint="سجّل وزن العجل عند وصوله ثم العلف والحليب من «إضافة» أسفل." />} columns={[
+        { key: 'name', label: 'العجل', render: (r) => <b>{r.name}</b> },
+        { key: 'sw', label: 'وزن البداية', render: (r) => (r.startWeight === null ? '—' : <span className="num">{fmt(r.startWeight)} كغ</span>) },
+        { key: 'ew', label: 'آخر وزن', render: (r) => (r.endWeight === null ? '—' : <span className="num">{fmt(r.endWeight)} كغ</span>) },
+        { key: 'gain', label: 'الزيادة', render: (r) => (r.gain === null ? '—' : <b className={`num ${r.gain >= 0 ? 'text-emerald-700' : 'text-rose-600'}`}>{fmt(r.gain)} كغ{r.dailyGain !== null ? ` (${fmt(r.dailyGain)}/يوم)` : ''}</b>) },
+        { key: 'feed', label: 'العلف المستهلك', render: (r) => <div><b className="num">{fmt(r.feed)} كغ</b>{Object.keys(r.feedByItem).length > 1 && <div className="text-xs text-slate-500">{objText(r.feedByItem)}</div>}</div> },
+        { key: 'milk', label: 'الحليب المستهلك', render: (r) => <b className="num">{fmt(r.milk)} لتر</b> },
+        { key: 'fc', label: 'كغ علف لكل كغ زيادة', hideMobile: true, render: (r) => (r.feedPerKgGain === null ? '—' : <span className="num">{fmt(r.feedPerKgGain)}</span>) },
+        { key: 'oth', label: 'بنود أخرى', hideMobile: true, render: (r) => objText(r.other) || '—' }]} />
+      <p className="mt-2 text-xs text-slate-500">الاستهلاك يُجمَع ضمن الفترة المختارة (فارغة = من البداية). الزيادة = آخر وزن − وزن البداية.</p>
+    </Card>
+    <CrudPage title="سجل تسمين العجول" subtitle="وزن العجل عند وصوله مع أمه، ثم كل علف وحليب وبند آخر يستهلكه — لتعرف بعد أشهر كم كلّفك" col="calfLogs" searchKeys={['tag', 'item', 'notes']} filter={inView}
+      useCtx={() => ({ animals: useCol('animals').rows })} defaults={{ type: 'feed' }}
+      fields={[{ name: 'calfId', label: 'العجل', type: 'rel', col: 'animals', optLabel: animalLabel, where: isCalf, required: true },
+        { name: 'date', label: 'التاريخ', type: 'date', required: true },
+        { name: 'type', label: 'النوع', type: 'select', required: true, options: CALF_TYPES, default: 'feed' },
+        { name: 'qty', label: 'الكمية / الوزن (كغ للوزن والعلف، لتر للحليب)', type: 'number', min: 0, required: true, positive: true },
+        { name: 'item', label: 'نوع العلف (اختياري) / اسم البند الآخر (مطلوب)', type: 'text', showIf: (v) => v.type === 'feed' || v.type === 'other' },
+        { name: 'unit', label: 'وحدة البند الآخر (كغ، جرعة، …)', type: 'text', showIf: (v) => v.type === 'other' },
+        { name: 'notes', label: 'ملاحظات', type: 'textarea' }]}
+      create={async (u, d, { animals: an }) => { check(d); return saveRecord(u, 'calfLogs', norm(d, an.find((a) => a.id === d.calfId))); }}
+      update={async (u, d, rec, { animals: an }) => { check(d); return saveRecord(u, 'calfLogs', norm(d, an.find((a) => a.id === d.calfId)), rec.id); }}
+      cols={(ctx) => [{ key: 'date', label: 'التاريخ' }, { key: 'c', label: 'العجل', render: (r) => animalLabel(ctx.animals.find((a) => a.id === r.calfId) || { tag: r.tag || '—' }) },
+        { key: 'type', label: 'النوع', render: (r) => <Badge tone={r.type === 'feed' ? 'amber' : r.type === 'milk' ? 'blue' : r.type === 'other' ? 'gray' : 'green'}>{CALF_AR[r.type] || r.type}</Badge> },
+        { key: 'item', label: 'البند', hideMobile: true, render: (r) => r.item || '—' }, { key: 'qty', label: 'الكمية', render: (r) => <b className="num">{fmt(r.qty)} {r.unit || ''}</b> }, { key: 'notes', label: 'ملاحظات', hideMobile: true }]} />
+  </div>);
 }
 /** فروق تبادل قديمة دُفعت من الصندوق ← تُنقل إلى حساب شريك (تختار الشريك لكل فرق أو للكل). */
 function ExchangeDiffConvert() {

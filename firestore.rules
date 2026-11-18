@@ -60,9 +60,9 @@ service cloud.firestore {
       allow update, delete: if false;
     }
     match /{col}/{id} {
-      allow read: if canRead() && col in ['customers','partners','partnerLoans','partnerLoanRepayments','partnerCapitalTransactions','milkProduction','milkSales','customerCredits','expenses','expensePayments','cashAccounts','suppliers','animals','animalEvents','stockItems','stockMovements','journalEntries'];
-      allow create: if canCreate() && col in ['customers','partners','partnerLoans','partnerLoanRepayments','partnerCapitalTransactions','milkProduction','milkSales','customerCredits','expenses','expensePayments','cashAccounts','suppliers','animals','animalEvents','stockItems','stockMovements','journalEntries'];
-      allow update: if canUpdate() && col in ['customers','partners','partnerLoans','partnerLoanRepayments','partnerCapitalTransactions','milkProduction','milkSales','customerCredits','expenses','expensePayments','cashAccounts','suppliers','animals','animalEvents','stockItems','stockMovements','journalEntries'];
+      allow read: if canRead() && col in ['customers','partners','partnerLoans','partnerLoanRepayments','partnerCapitalTransactions','milkProduction','milkSales','customerCredits','expenses','expensePayments','cashAccounts','suppliers','animals','animalEvents','calfLogs','stockItems','stockMovements','journalEntries'];
+      allow create: if canCreate() && col in ['customers','partners','partnerLoans','partnerLoanRepayments','partnerCapitalTransactions','milkProduction','milkSales','customerCredits','expenses','expensePayments','cashAccounts','suppliers','animals','animalEvents','calfLogs','stockItems','stockMovements','journalEntries'];
+      allow update: if canUpdate() && col in ['customers','partners','partnerLoans','partnerLoanRepayments','partnerCapitalTransactions','milkProduction','milkSales','customerCredits','expenses','expensePayments','cashAccounts','suppliers','animals','animalEvents','calfLogs','stockItems','stockMovements','journalEntries'];
       allow delete: if isAdmin();
     }
   }

@@ -44,6 +44,7 @@ function Gate() {
         <Route path="animals" element={<Livestock />} />
         <Route path="animal-events" element={<Livestock initial="events" />} />
         <Route path="exchange" element={<Livestock initial="exchange" />} />
+        <Route path="calves" element={<Livestock initial="fatten" />} />
         <Route path="inventory" element={<Inventory />} />
         <Route path="reports" element={<Reports />} />
         <Route path="users" element={<Users />} />
