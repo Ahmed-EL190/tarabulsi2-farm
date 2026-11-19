@@ -299,6 +299,16 @@ export async function voidAnimalEventCascade(user, ev, { cash = [], ledger = [] 
   if (ev.exchangeId) { cash.filter((t) => !t.voided && t.exchangeId === ev.exchangeId).forEach((t) => v('cashTransactions', t.id)); ledger.filter((e) => !e.voided && e.exchangeId === ev.exchangeId).forEach((e) => v('partnerCapitalTransactions', e.id)); }
   return commit(user, ops, 'void');
 }
+/** إلغاء عملية تبادل كاملة: كل أحداثها (الخارج والوارد) + الفرق النقدي + قيود الشركاء (دفع الفرق/استلامه/الخسارة) في خطوة واحدة. */
+export async function voidExchange(user, evs = [], { cash = [], ledger = [] } = {}, reason) {
+  const ops = []; const seen = new Set();
+  const v = (col, id) => { if (!seen.has(col + id)) { seen.add(col + id); ops.push({ col, id, merge: true, data: voidData(reason), action: 'void' }); } };
+  evs.filter((e) => !e.voided).forEach((e) => v('animalEvents', e.id));
+  const ids = new Set(evs.map((e) => e.exchangeId).filter(Boolean));
+  cash.filter((t) => !t.voided && ids.has(t.exchangeId)).forEach((t) => v('cashTransactions', t.id));
+  ledger.filter((e) => !e.voided && ids.has(e.exchangeId)).forEach((e) => v('partnerCapitalTransactions', e.id));
+  return ops.length ? commit(user, ops, 'void') : null;
+}
 /** إلغاء تسوية معتمدة (فقط لو لا توجد توزيعات نقدية مرتبطة بها). */
 export async function voidSettlement(user, st, ledger = [], reason) {
   if (ledger.some((e) => e.type === 'profit_distribution' && e.settlementId === st.id && !e.voided)) throw new Error('توجد توزيعات نقدية مرتبطة بهذه التسوية — ألغِها أولاً.');
