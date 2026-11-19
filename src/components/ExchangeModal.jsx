@@ -5,7 +5,7 @@ import { lightNum, numOf } from '../lib/num';
 import { useCol, useCustomLists, createAnimal, commit, newId } from '../data/db';
 import { recordAnimalEvent } from '../data/ops';
 import { useAuth } from '../data/auth';
-import { herdState, animalExchange, validateNewAnimal, round2 } from '../lib/finance';
+import { herdState, animalExchange, validateNewAnimal, round2, splitReceivedDiff } from '../lib/finance';
 import { CURRENCIES, allAnimalCategories } from '../lib/constants';
 
 /** Exchange (animal for animal + cash difference) or transfer out. The incoming animal is searched by tag/name (already registered)
@@ -14,8 +14,9 @@ export default function ExchangeModal({ onClose }) {
   const { user } = useAuth(); useCustomLists();
   const animals = useCol('animals').rows.filter((a) => !a.voided); const events = useCol('animalEvents').rows; const accounts = useCol('cashAccounts').rows.filter((a) => !a.voided);
   const partners = useCol('partners').rows.filter((p) => !p.voided); const defaultPayer = partners.find((p) => /وليد/.test(p.name || ''))?.id || (partners.length === 1 ? partners[0].id : '');
+  const ledgerRows = useCol('partnerCapitalTransactions').rows; const cashRows = useCol('cashTransactions').rows;
   const herd = useMemo(() => herdState(events, animals), [events, animals]); // eslint-disable-line
-  const [f, setF] = useState({ kind: 'exchange', date: today(), outs: [{ id: null, value: '' }], mode: 'new', inId: null, newValue: '', currency: 'SYP', accountId: '', payFrom: 'partner', payerId: '', notes: '',
+  const [f, setF] = useState({ kind: 'exchange', date: today(), outs: [{ id: null, value: '' }], mode: 'new', inId: null, newValue: '', currency: 'SYP', accountId: '', payFrom: 'partner', payerId: '', recvTo: 'payer', bearer: 'farm', lossP1: '', lossP2: '', lossAmt2: '', notes: '',
     tag: '', name: '', category: 'cow', sex: 'F', breed: '', birthDate: '', milkAtPurchase: '', pregnant: 'na', daysToBirth: '' });
   const [err, setErr] = useState(''); const [busy, setBusy] = useState(false);
   const set = (k, v) => setF((x) => ({ ...x, [k]: v }));
@@ -24,12 +25,20 @@ export default function ExchangeModal({ onClose }) {
   const addOut = () => setF((x) => ({ ...x, outs: [...x.outs, { id: null, value: '' }] }));
   const delOut = (i) => setF((x) => ({ ...x, outs: x.outs.length > 1 ? x.outs.filter((_, k) => k !== i) : x.outs }));
   const outRows = f.outs.map((o) => ({ ...o, a: animals.find((a) => a.id === o.id) }));
+  // نتيجة التبادل = قيمة كل خارج − سعر شرائه (خسارة سالبة / ربح موجب)
+  const resultOf = (o) => (o.a && Number(o.a.acquisitionCost) > 0 ? round2((numOf(o.value) || 0) - Number(o.a.acquisitionCost)) : 0);
+  const resultTotal = round2(outRows.reduce((t, o) => t + resultOf(o), 0));
   const outTags = outRows.filter((o) => o.a).map((o) => o.a.tag).join('، ');
   const accountId = f.accountId || (accounts.length === 1 ? accounts[0].id : ''); const payerId = f.payerId || defaultPayer;
   // اختيار حيوان مسجّل مسبقاً يملأ قيمته (سعر شرائه) تلقائياً
   const pickIn = (v) => setF((x) => { const a = animals.find((y) => y.id === v); return { ...x, inId: v, newValue: x.newValue || (a && Number(a.acquisitionCost) > 0 ? String(a.acquisitionCost) : x.newValue) }; });
   const inAnimal = f.mode === 'existing' ? animals.find((a) => a.id === f.inId) : null;
   const oldV = round2(f.outs.reduce((t, o) => t + (numOf(o.value) || 0), 0)), newV = numOf(f.newValue) || 0; const diff = round2(newV - oldV);
+  // فرق مستلَم: يذهب لدافع ثمن الحيوان الخارج (تلقائياً من بياناته) أو للصندوق
+  const recv = diff < 0 ? splitReceivedDiff(-diff, outRows.filter((o) => o.a).map((o) => ({ animal: o.a, weight: Number(o.a.acquisitionCost) || numOf(o.value) || 0 })), { events, ledger: ledgerRows, cash: cashRows }) : null;
+  const toPayer = !!recv && f.recvTo === 'payer' && recv.partners.length > 0;
+  const cashPart = !recv ? 0 : toPayer ? recv.farm : round2(-diff);
+  const nameOf = (id) => partners.find((p) => p.id === id)?.name || 'شريك';
   const submit = async () => {
     setErr(''); setBusy(true);
     try {
@@ -47,14 +56,26 @@ export default function ExchangeModal({ onClose }) {
       const x = animalExchange({ date: f.date, oldAnimalId: f.outs[0].id, newAnimalId: inId || 'pending', oldValue: oldV, newValue: newV, currency: f.currency });
       const byPartner = x.cashDifference > 0 && f.payFrom === 'partner'; // نحن ندفع فرقاً: يدفعه شريك (يُسجَّل في حسابه) أو يخرج من الصندوق
       if (byPartner && !payerId) throw new Error('اختر الشريك الذي دفع فرق التبادل');
-      if (x.cash.length && !byPartner && !accountId) throw new Error('يوجد فرق نقدي: اختر الصندوق');
+      if (diff > 0 ? (x.cash.length && !byPartner && !accountId) : (cashPart > 0 && !accountId)) throw new Error('يوجد فرق نقدي: اختر الصندوق');
       if (f.mode === 'new') inId = await createAnimal(user, { tag: inTag, name: f.name, category: f.category, sex: f.sex, breed: f.breed, birthDate: f.birthDate, milkAtPurchase: f.milkAtPurchase, pregnant: f.sex === 'F' ? f.pregnant : 'na', daysToBirth: f.daysToBirth, acquisitionDate: f.date, acquisitionCost: newV, currency: f.currency, origin: 'purchase', healthStatus: 'healthy', viaExchange: true });
       const exId = newId('animalEvents');
       const note = `فرق تبادل ${outTags} ↔ ${inTag}`;
+      const bearer = resultTotal !== 0 ? f.bearer : '';
+      // الشريك الذي يتحمّل (أو يستفيد) يختاره المستخدم: شريك واحد، أو شريكان بمبلغ لكل منهما
+      const resultParts = bearer !== 'partners' ? [] : (() => {
+        if (!f.lossP1) throw new Error(`اختر الشريك الذي ${resultTotal < 0 ? 'يتحمّل الخسارة' : 'يستفيد من الربح'}`);
+        const tot = Math.abs(resultTotal), a2 = numOf(f.lossAmt2) || 0;
+        if (!f.lossP2) return [{ partnerId: f.lossP1, amount: tot }];
+        if (f.lossP2 === f.lossP1) throw new Error('الشريكان متطابقان');
+        if (!(a2 > 0 && a2 < tot)) throw new Error('مبلغ الشريك الثاني يجب أن يكون أكبر من صفر وأقل من الإجمالي');
+        return [{ partnerId: f.lossP1, amount: round2(tot - a2) }, { partnerId: f.lossP2, amount: a2 }];
+      })();
       await commit(user, [
-        ...outRows.map((o) => ({ col: 'animalEvents', data: { animalId: o.a.id, tag: o.a.tag, type: 'exchange_out', date: f.date, value: numOf(o.value) || 0, currency: f.currency, exchangeId: exId, counterpartTag: inTag, notes: f.notes } })),
-        { col: 'animalEvents', data: { animalId: inId, tag: inTag, type: 'exchange_in', date: f.date, value: newV, currency: f.currency, exchangeId: exId, counterpartTag: outTags, ...(byPartner ? { diffPaidBy: payerId } : {}) } },
-        ...(byPartner ? [{ col: 'partnerCapitalTransactions', data: { partnerId: payerId, date: f.date, type: 'animal_purchase_paid', amount: x.cashDifference, currency: f.currency, animalId: inId, exchangeId: exId, note } }] : x.cash.map((c) => ({ col: 'cashTransactions', data: { ...c, accountId, exchangeId: exId, description: note } }))),
+        ...outRows.map((o) => ({ col: 'animalEvents', data: { animalId: o.a.id, tag: o.a.tag, type: 'exchange_out', date: f.date, value: numOf(o.value) || 0, currency: f.currency, exchangeId: exId, counterpartTag: inTag, costBasis: Number(o.a.acquisitionCost) || 0, result: resultOf(o), ...(bearer ? { resultBearer: bearer } : {}), ...(bearer === 'partners' ? { resultPartnerIds: resultParts.map((r) => r.partnerId) } : {}), notes: f.notes } })),
+        { col: 'animalEvents', data: { animalId: inId, tag: inTag, type: 'exchange_in', date: f.date, value: newV, currency: f.currency, exchangeId: exId, counterpartTag: outTags, ...(byPartner ? { diffPaidBy: payerId } : {}), ...(toPayer ? { diffReceivedBy: recv.partners.map((q) => q.partnerId) } : {}) } },
+        ...resultParts.map((r) => ({ col: 'partnerCapitalTransactions', data: { partnerId: r.partnerId, date: f.date, type: resultTotal < 0 ? 'animal_loss_charge' : 'animal_gain_credit', amount: r.amount, currency: f.currency, animalId: inId, exchangeId: exId, note: `${resultTotal < 0 ? 'خسارة' : 'ربح'} ${note}` } })),
+        ...(toPayer ? recv.partners.map((q) => ({ col: 'partnerCapitalTransactions', data: { partnerId: q.partnerId, date: f.date, type: 'animal_purchase_repaid', amount: q.amount, currency: f.currency, animalId: inId, exchangeId: exId, note: `مبلغ فرق تبادل مستلَم — يعود لدافع ثمن ${outTags}` } })) : []),
+        ...(byPartner ? [{ col: 'partnerCapitalTransactions', data: { partnerId: payerId, date: f.date, type: 'animal_purchase_paid', amount: x.cashDifference, currency: f.currency, animalId: inId, exchangeId: exId, note } }] : x.cash.map((c) => ({ col: 'cashTransactions', data: { ...c, amount: diff < 0 ? cashPart : c.amount, accountId, exchangeId: exId, description: note } })).filter((c) => c.data.amount > 0)),
       ]);
       onClose();
     } catch (e) { setErr(String(e.message).startsWith('DUPLICATE_TAG') ? `رقم الحيوان مسجّل مسبقاً لحيوان قائم${e.message.split(':')[1] ? ` (${e.message.split(':')[1]})` : ''}` : e.message || 'تعذّر الحفظ'); }
@@ -100,8 +121,18 @@ export default function ExchangeModal({ onClose }) {
           <Field label="قيمة الحيوان الوارد المتفق عليها"><input type="text" inputMode="decimal" dir="ltr" className="input" value={f.newValue} onChange={(e) => set('newValue', lightNum(e.target.value))} /></Field>
           {diff > 0 && <Field label="من يدفع فرق التبادل؟"><Sel k="payFrom" opts={[['partner', 'شريك يدفع من ماله (يُسجَّل في حسابه)'], ['account', 'من صندوق المزرعة']]} /></Field>}
           {diff > 0 && f.payFrom === 'partner' && <Field label="الشريك الذي دفع الفرق"><select className="input" value={payerId} onChange={(ev) => set('payerId', ev.target.value)}><option value="">— اختر —</option>{partners.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}</select></Field>}
-          {(diff < 0 || (diff > 0 && f.payFrom === 'account')) && <Field label={diff < 0 ? 'الصندوق (لاستلام الفرق)' : 'الصندوق (لدفع الفرق)'}><select className="input" value={accountId} onChange={(ev) => set('accountId', ev.target.value)}><option value="">— اختر —</option>{accounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}</select></Field>}
+          {diff < 0 && <div className="sm:col-span-2"><Field label="الفرق المستلَم يذهب إلى"><Sel k="recvTo" opts={[['payer', recv?.partners.length ? `دافع ثمن الحيوان الخارج: ${recv.partners.map((q) => `${nameOf(q.partnerId)} ${fmt(q.amount)}`).join(' + ')}${recv.farm > 0 ? ` — والباقي ${fmt(recv.farm)} للصندوق` : ''}` : 'دافع ثمن الحيوان الخارج (لا يوجد شريك دافع مسجّل — سيذهب للصندوق)'], ['account', 'صندوق المزرعة']]} /></Field></div>}
+          {((diff < 0 && cashPart > 0) || (diff > 0 && f.payFrom === 'account')) && <Field label={diff < 0 ? 'الصندوق (لاستلام الفرق)' : 'الصندوق (لدفع الفرق)'}><select className="input" value={accountId} onChange={(ev) => set('accountId', ev.target.value)}><option value="">— اختر —</option>{accounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}</select></Field>}
           {(oldV > 0 || newV > 0) && <div className={`rounded-lg p-3 text-sm font-bold sm:col-span-2 ${diff === 0 ? 'bg-slate-50' : diff > 0 ? 'bg-rose-50 text-rose-700' : 'bg-emerald-50 text-emerald-700'}`}>{diff === 0 ? 'لا يوجد فرق نقدي' : diff > 0 ? `ندفع فرقاً: ${fmt(diff)} ${f.currency}` : `نستلم فرقاً: ${fmt(-diff)} ${f.currency}`}</div>}
+          {resultTotal !== 0 && (<>
+            <div className={`rounded-lg p-3 text-sm font-bold sm:col-span-2 ${resultTotal < 0 ? 'bg-rose-50 text-rose-700' : 'bg-emerald-50 text-emerald-700'}`}>{resultTotal < 0 ? `خسارة التبادل (قيمة الخارج أقل من سعر شرائه): ${fmt(-resultTotal)}` : `ربح التبادل (قيمة الخارج أعلى من سعر شرائه): ${fmt(resultTotal)}`} {f.currency}</div>
+            <div className="sm:col-span-2"><Field label={resultTotal < 0 ? 'الخسارة على' : 'الربح لصالح'}><Sel k="bearer" opts={[['farm', 'المزرعة (تدخل في حساب الأرباح وتُوزَّع بالأثلاث)'], ['partners', 'شريك أختاره أنا (يُقيَّد في حسابه ولا يمسّ ربح المزرعة)']]} /></Field></div>
+            {f.bearer === 'partners' && (<>
+              <Field label={resultTotal < 0 ? 'الشريك الذي يتحمّل الخسارة *' : 'الشريك المستفيد *'}><select className="input" value={f.lossP1} onChange={(e) => set('lossP1', e.target.value)}><option value="">— اختر —</option>{partners.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}</select></Field>
+              <Field label="شريك ثانٍ يشاركه (اختياري)"><select className="input" value={f.lossP2} onChange={(e) => set('lossP2', e.target.value)}><option value="">— لا —</option>{partners.filter((p) => p.id !== f.lossP1).map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}</select></Field>
+              {f.lossP2 && <Field label={`مبلغ الشريك الثاني (من ${fmt(Math.abs(resultTotal))})`}><input type="text" inputMode="decimal" dir="ltr" className="input" value={f.lossAmt2} onChange={(e) => set('lossAmt2', lightNum(e.target.value))} /></Field>}
+            </>)}
+          </>)}
         </>)}
         <div className="sm:col-span-2"><Field label="الطرف الآخر / ملاحظات"><input className="input" value={f.notes} onChange={(e) => set('notes', e.target.value)} /></Field></div>
         <div className="flex flex-col-reverse gap-2 sm:col-span-2 sm:flex-row sm:justify-end"><button className="btn btn-ghost w-full sm:w-auto" onClick={onClose}>إلغاء</button><button className="btn btn-primary w-full sm:w-auto" disabled={busy} onClick={submit}>حفظ</button></div>

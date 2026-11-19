@@ -198,7 +198,7 @@ export function Settlements() {
   const clash = hist.find((h) => (h.currency || 'SYP') === c && !(to < h.from || from > h.to));
   const calc = useMemo(() => {
     const ap = animalPLInputs(events, animals, asExpense);
-    const pl = profitAndLoss({ agreements: ags, deliveries: dls, expenses: exps, otherIncome: cash.filter((t) => t.type === 'other_income' && !t.voided), animalSales: ap.animalSales, animalPurchases: ap.animalPurchases, from, to, currency: c, animalPurchaseAsExpense: false });
+    const pl = profitAndLoss({ agreements: ags, deliveries: dls, expenses: exps, otherIncome: cash.filter((t) => t.type === 'other_income' && !t.voided), animalSales: ap.animalSales, animalPurchases: ap.animalPurchases, exchangeResults: ap.exchangeResults, from, to, currency: c, animalPurchaseAsExpense: false });
     // الذمم حتى تاريخ نهاية الفترة (وليس حتى اليوم)
     const cc = (x) => (x.currency || 'SYP') === c; const upTo = (x) => !x.date || x.date <= to;
     const nets = custs.map((cu) => netCustomerBalance(cu.id, { agreements: ags.filter((x) => cc(x) && upTo(x)), deliveries: dls.filter(upTo), payments: pays.filter((x) => cc(x) && upTo(x)) }, c === 'SYP' ? cu.openingBalance : 0));
@@ -218,6 +218,7 @@ export function Settlements() {
   const lines = [
     ['إيراد الحليب (التسليمات)', calc.pl.milkRevenue], ['إيرادات أخرى', calc.pl.otherIncome], ['مبيعات المواشي (بسعر البيع كاملاً)', calc.pl.animalSales], ['إجمالي الإيراد', calc.pl.revenue, 'b'],
     ['مصروفات التشغيل (كلها — بدون شراء الحيوانات)', calc.pl.operatingExpenses], ['إجمالي المصروفات', calc.pl.totalExpenses, 'b'],
+    ...(calc.pl.exchangeResult ? [['نتيجة تبادل الحيوانات على المزرعة (ربح +/ خسارة −)', calc.pl.exchangeResult]] : []),
     ['صافي الربح / الخسارة', calc.pl.netProfit, 'net'],
     ['ذمم العملاء — عليهم لنا (صافي بعد خصم دفعاتهم المقدمة)', calc.recv, 'i'], ['أرصدة دائنة للعملاء — لهم علينا', calc.custCredit, 'i'], ['ذمم الموردين — مصروفات غير مسددة', calc.payable, 'i'], ['أرصدة قروض الشركاء (أصل)', calc.loanBal, 'i'], ['توزيعات نقدية سابقة', calc.prevDist, 'i']];
   const stDists = see ? led.filter((e) => e.type === 'profit_distribution' && e.settlementId === see.id && !e.voided).sort((a, b) => a.date.localeCompare(b.date)) : [];

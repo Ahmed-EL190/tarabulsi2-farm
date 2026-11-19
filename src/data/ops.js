@@ -92,14 +92,26 @@ export async function finalizeSettlement(user, s, partners, existing = [], preco
 }
 export function recordAnimalEvent(user, ev, cash, ledger) {
   const evId = newId('animalEvents');
-  return commit(user, [{ col: 'animalEvents', id: evId, data: ev }, ...(cash ? [{ col: 'cashTransactions', data: cash }] : []), ...(ledger ? [{ col: 'partnerCapitalTransactions', data: { ...ledger, eventId: evId } }] : [])]);
+  return commit(user, [{ col: 'animalEvents', id: evId, data: ev }, ...(cash ? [{ col: 'cashTransactions', data: cash }] : []), ...(ledger ? [].concat(ledger).map((l) => ({ col: 'partnerCapitalTransactions', data: { ...l, eventId: evId } })) : [])]);
 }
 
 /** كيف دُفع ثمن شراء الحيوان؟
  *  partner (الافتراضي): دفعه شريك من ماله ← يُسجَّل في حسابه «ثمن حيوان دفعه الشريك» (مستحق له، يزيد تلقائياً مع كل شراء) ولا تتحرك نقود الصندوق.
  *  account: خرج من صندوق المزرعة ← حركة صندوق «شراء حيوان». */
-export function animalPurchasePayment({ from, partnerId, accountId, cost, date, currency, tag, animalId }) {
+export function animalPurchasePayment({ from, partnerId, accountId, cost, date, currency, tag, animalId, splits, proportional }) {
   const amount = Number(cost || 0); if (!(amount > 0)) return { cash: null, ledger: null, extra: {} };
+  if (from === 'partners') { // اشتراه أكثر من شريك: لكل شريك مبلغه ويُقيَّد في حسابه
+    const sp = (splits || []).filter((x) => x.partnerId && Number(x.amount) > 0).map((x) => ({ partnerId: x.partnerId, amount: Number(x.amount) }));
+    if (sp.length < 2) throw new Error('أدخل شريكين على الأقل مع مبلغ كل واحد منهما');
+    if (new Set(sp.map((x) => x.partnerId)).size !== sp.length) throw new Error('شريك مكرر في توزيع الدفع');
+    let parts = sp; const total = Math.round(sp.reduce((t, x) => t + x.amount, 0) * 100) / 100;
+    if (Math.abs(total - amount) > 0.01) {
+      if (!proportional) throw new Error(`مجموع مبالغ الشركاء (${total}) لا يساوي سعر الشراء (${amount})`);
+      parts = sp.map((x) => ({ ...x, amount: Math.floor(amount * x.amount / total * 100) / 100 })); // الصغير: بنفس نسب الأم
+      parts[0].amount = Math.round((parts[0].amount + amount - parts.reduce((t, x) => t + x.amount, 0)) * 100) / 100;
+    }
+    return { cash: null, ledger: parts.map((x) => ({ partnerId: x.partnerId, date, type: 'animal_purchase_paid', amount: x.amount, currency, animalId, note: `شراء ${tag} (حصة شريك)` })), extra: { paidFrom: 'partner', payerPartnerId: parts[0].partnerId, payers: parts } };
+  }
   if (from === 'account') {
     if (!accountId) throw new Error('اختر الصندوق الذي دُفع منه ثمن الشراء');
     return { cash: { date, type: 'animal_purchase', direction: 'out', amount, currency, accountId, animalId, description: `شراء ${tag}` }, ledger: null, extra: {} };
@@ -280,7 +292,8 @@ export async function voidAnimalEventCascade(user, ev, { cash = [], ledger = [] 
   const want = ev.type === 'sale' ? 'animal_sale' : ev.type === 'purchase' ? 'animal_purchase' : null;
   if (want) animalCash(cash.filter((t) => t.type === want), ev.animalId, ev.tag, [ev]).filter((t) => t.date === ev.date && Number(t.amount) === Number(ev.value)).slice(0, 1).forEach((t) => v('cashTransactions', t.id));
   // ثمن شراء دفعه شريك: قيده في حسابه يُلغى مع الحدث
-  ledger.filter((e) => !e.voided && e.type === 'animal_purchase_paid' && (e.eventId === ev.id || (!e.eventId && e.animalId === ev.animalId && e.date === ev.date && Number(e.amount) === Number(ev.value)))).slice(0, 1).forEach((e) => v('partnerCapitalTransactions', e.id));
+  { const byEv = ledger.filter((e) => !e.voided && e.type === 'animal_purchase_paid' && e.eventId === ev.id); const legacy = ledger.filter((e) => !e.voided && e.type === 'animal_purchase_paid' && !e.eventId && e.animalId === ev.animalId && e.date === ev.date && Number(e.amount) === Number(ev.value)).slice(0, 1);
+    (byEv.length ? byEv : legacy).forEach((e) => v('partnerCapitalTransactions', e.id)); } // كل حصص الشركاء في الشراء
   if (ev.type === 'purchase') ledger.filter((e) => e.animalId === ev.animalId && e.type === 'capital_contribution' && !e.voided && e.date === ev.date && Number(e.amount) === Number(ev.value)).slice(0, 1).forEach((e) => v('partnerCapitalTransactions', e.id));
   // تبادل: فرق نقدي/قيد شريك مرتبط بنفس التبادل
   if (ev.exchangeId) { cash.filter((t) => !t.voided && t.exchangeId === ev.exchangeId).forEach((t) => v('cashTransactions', t.id)); ledger.filter((e) => !e.voided && e.exchangeId === ev.exchangeId).forEach((e) => v('partnerCapitalTransactions', e.id)); }

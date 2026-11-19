@@ -145,6 +145,7 @@ const LEDGER_SIGN = {
   opening_balance: 1, capital_contribution: 1, additional_capital: 1, loan_given: 1, loan_principal_repayment: -1,
   interest_accrued: 1, interest_paid: -1, expense_paid_personally: 1, reimbursement: -1, withdrawal: -1,
   profit_allocation: 1, profit_distribution: -1, adjustment: 1, animal_purchase_paid: 1, animal_purchase_repaid: -1, partner_advance: -1,
+  animal_loss_charge: -1, animal_gain_credit: 1, // خسارة/ربح تبادل حيوانات يتحمّلها الشريك (لا تمسّ ربح المزرعة)
 };
 export const LEDGER_TYPES = Object.keys(LEDGER_SIGN);
 export function partnerLedger(partnerId, entries, { currency, from, to } = {}) {
@@ -182,7 +183,7 @@ export function partnerDebt(partnerId, ledger = [], currency = 'SYP') {
   const loans = round2(sum('loan_given') - sum('loan_principal_repayment'));
   const purchases = round2(sum('animal_purchase_paid') - sum('animal_purchase_repaid'));
   const advances = sum('partner_advance'); // سلف أخذها الشريك من المزرعة: تُخصم مما نستحقه له
-  const other = round2(sum('expense_paid_personally', 'additional_capital', 'capital_contribution') - sum('reimbursement') - advances);
+  const other = round2(sum('expense_paid_personally', 'additional_capital', 'capital_contribution', 'animal_gain_credit') - sum('reimbursement', 'animal_loss_charge') - advances);
   return { loans, purchases, other, total: round2(loans + purchases + other), loansTotal: sum('loan_given'), purchasesTotal: sum('animal_purchase_paid'), withdrawals: sum('withdrawal'), advances, distributions: sum('profit_distribution') };
 }
 /** يوزّع مبلغ السداد على الأبواب الثلاثة: الافتراضي سلف ← ثمن بقر ← مصروفات/مبالغ؛ أو ثمن البقر أولاً؛ أو باب واحد فقط. يرمي خطأ لو المبلغ أكبر من المستحق. */
@@ -279,7 +280,7 @@ export function cashFlowSummary(txs, { from, to, currency } = {}) {
 
 // ───────────── Profit & settlement ─────────────
 /** Accrual P&L: milk revenue = DELIVERED value (not cash). Animal purchases follow the workbook (expense) unless configured. */
-export function profitAndLoss({ deliveries = [], agreements = [], expenses = [], otherIncome = [], animalSales = [], animalPurchases = [], from, to, currency = 'SYP', animalPurchaseAsExpense = true }) {
+export function profitAndLoss({ deliveries = [], agreements = [], expenses = [], otherIncome = [], animalSales = [], animalPurchases = [], exchangeResults = [], from, to, currency = 'SYP', animalPurchaseAsExpense = true }) {
   const price = (d) => n(d.pricePerLiter ?? agreements.find((a) => a.id === d.agreementId)?.pricePerLiter);
   const agCur = (d) => agreements.find((a) => a.id === d.agreementId)?.currency || 'SYP';
   const sum = (rows) => round2(rows.reduce((s, x) => s + n(x.amount), 0));
@@ -290,7 +291,9 @@ export function profitAndLoss({ deliveries = [], agreements = [], expenses = [],
   const purchases = animalPurchaseAsExpense ? sum(animalPurchases.filter((x) => inRange(x.date, from, to) && x.currency === currency)) : 0;
   const revenue = round2(milkRevenue + other + animals);
   const totalExpenses = round2(opex + purchases);
-  return { milkRevenue, otherIncome: other, animalSales: animals, revenue, operatingExpenses: opex, animalPurchases: purchases, totalExpenses, netProfit: round2(revenue - totalExpenses) };
+  // نتيجة تبادل الحيوانات التي اختير أن تكون على المزرعة (ربح موجب / خسارة سالبة)
+  const exchangeResult = round2(exchangeResults.filter((x) => inRange(x.date, from, to) && (x.currency || 'SYP') === currency).reduce((t, x) => t + n(x.amount), 0));
+  return { milkRevenue, otherIncome: other, animalSales: animals, revenue, operatingExpenses: opex, animalPurchases: purchases, totalExpenses, exchangeResult, netProfit: round2(revenue - totalExpenses + exchangeResult) };
 }
 export function validateShares(partners, key = 'profitSharePct') {
   const total = round2(partners.reduce((s, p) => s + n(p[key]), 0));
@@ -378,7 +381,9 @@ export function animalPLInputs(events = [], animals = []) {
     if (e.voided || byId[e.animalId]?.voided || e.type !== 'sale') continue;
     animalSales.push({ date: e.date, currency: e.currency || 'SYP', amount: n(e.value) });
   }
-  return { animalSales, animalPurchases: [] };
+  // نتيجة التبادل: تدخل الأرباح فقط لو اختير أن تكون على المزرعة (على الشركاء تُقيَّد في حساباتهم)
+  const exchangeResults = events.filter((e) => !e.voided && !byId[e.animalId]?.voided && e.type === 'exchange_out' && e.resultBearer === 'farm' && n(e.result) !== 0).map((e) => ({ date: e.date, currency: e.currency || 'SYP', amount: n(e.result) }));
+  return { animalSales, animalPurchases: [], exchangeResults };
 }
 
 // ───────────── Animals ─────────────
@@ -496,6 +501,40 @@ export function herdValue(animals = [], events = []) {
   }
   return { count: rows.length, rows, byCurrency, byCategory: Object.values(byCategory) };
 }
+/** يقسم مبلغاً (خسارة/ربح) على شركاء الملكية بنسبة رأس مال كل واحد حتى تاريخ `to` (نفس قاعدة الأرباح). → [{partnerId, amount}] مجموعها = المبلغ */
+export function splitAmongOwners(amount, partners, data = {}, { currency = 'SYP', to } = {}) {
+  const owners = partners.filter((p) => !p.voided && p.status !== 'inactive' && profitGroupOf(p) === 'owners');
+  if (!owners.length) throw new Error('لا يوجد شريك ملكية لتحميل الخسارة/الربح عليه');
+  const cap = owners.map((p) => partnerInvestment(p.id, data, { currency, to }).total);
+  const { w } = weightsOf(owners, (p) => cap[owners.indexOf(p)], (p) => n(p.ownershipPct));
+  const parts = splitByWeights(round2(amount), w);
+  return owners.map((p, i) => ({ partnerId: p.id, amount: parts[i] })).filter((x) => x.amount !== 0);
+}
+/** نتيجة الحيوان (ربح/خسارة): بيع = سعر البيع − سعر الشراء، تبادل = القيمة المتفق عليها − سعر الشراء. null لو لا بيع/تبادل أو سعر الشراء غير معروف. */
+export function animalResultInfo(animal, events = []) {
+  const cost = n(animal.acquisitionCost); if (!(cost > 0)) return null;
+  const ev = events.find((e) => !e.voided && e.animalId === animal.id && (e.type === 'sale' || e.type === 'exchange_out')); if (!ev) return null;
+  const result = ev.result !== undefined && ev.result !== null && ev.result !== '' ? n(ev.result) : round2(n(ev.value) - cost);
+  return { kind: ev.type === 'sale' ? 'sale' : 'exchange', result, value: n(ev.value), cost, bearer: ev.resultBearer || null, partnerIds: ev.resultPartnerIds || [], currency: ev.currency || animal.currency || 'SYP' };
+}
+/** الفرق المستلَم في تبادل = «بعنا» الحيوان الخارج وأخذنا مالاً: يذهب لمن دفع ثمنه (شريك أو أكثر، بنسبة ما دفع) والباقي (ما دُفع من الصندوق أو مجهول) للصندوق.
+ *  outs: [{animal, weight}] weight = سعر شراء الخارج (أو قيمته). → { partners:[{partnerId,amount}], farm } مجموعها = المبلغ */
+export function splitReceivedDiff(received, outs = [], data = {}) {
+  const buckets = new Map(); let farmW = 0;
+  const add = (id, w) => buckets.set(id, (buckets.get(id) || 0) + w);
+  for (const { animal, weight } of outs) {
+    const w = n(weight); if (!(w > 0)) continue;
+    const src = purchaseSource(animal, data); const ex = animalExchangeInfo(animal, data);
+    if (src.multi) { const tot = src.partners.reduce((t, q) => t + q.amount, 0) || 1; src.partners.forEach((q) => add(q.partnerId, w * q.amount / tot)); }
+    else if (src.from === 'partner' && src.partnerId) add(src.partnerId, w);
+    else if (ex?.paidBy === 'partner' && ex.partnerId) add(ex.partnerId, w); // وصل بتبادل سابق ودفع فرقه شريك
+    else farmW += w;
+  }
+  const keys = [...buckets.keys()]; const ws = [...keys.map((k) => buckets.get(k)), ...(farmW > 0 ? [farmW] : [])];
+  if (!ws.length) return { partners: [], farm: round2(received) };
+  const parts = splitByWeights(round2(received), ws);
+  return { partners: keys.map((k, i) => ({ partnerId: k, amount: parts[i] })).filter((x) => x.amount !== 0), farm: farmW > 0 ? parts[keys.length] : 0 };
+}
 /** بيانات تبادل الحيوان الوارد: ما خرج مقابله (حيوان أو أكثر) + قيمته + الفرق + من دفعه (شريك/صندوق).
  *  diff > 0 = دفعنا فرقاً · diff < 0 = استلمنا فرقاً. يُرجع null لو الحيوان لم يدخل بتبادل. */
 export function animalExchangeInfo(animal, { events = [], ledger = [], cash = [] } = {}) {
@@ -513,6 +552,8 @@ export function animalExchangeInfo(animal, { events = [], ledger = [], cash = []
     if (inEv.diffPaidBy) return { ...res, paidBy: 'partner', partnerId: inEv.diffPaidBy };
   } else {
     const c = cash.find((t) => !t.voided && t.exchangeId === exId && t.type === 'animal_exchange_receipt');
+    const rep = ledger.filter((l) => !l.voided && l.type === 'animal_purchase_repaid' && l.exchangeId === exId); // ذهب لدافع ثمن الحيوان الخارج
+    if (rep.length) return { ...res, paidBy: 'partner', partnerId: rep[0].partnerId, partners: rep.map((l) => ({ partnerId: l.partnerId, amount: n(l.amount) })), accountId: c?.accountId || null };
     if (c) return { ...res, paidBy: 'account', accountId: c.accountId };
   }
   return res;
@@ -521,7 +562,9 @@ export function animalExchangeInfo(animal, { events = [], ledger = [], cash = []
 export function purchaseSource(animal, { events = [], ledger = [], cash = [] } = {}) {
   const ev = events.find((e) => !e.voided && e.animalId === animal.id && e.type === 'purchase' && n(e.value) > 0) || events.find((e) => !e.voided && e.animalId === animal.id && e.type === 'purchase');
   const out = { event: ev || null, from: 'none', partnerId: null, accountId: null, amount: ev ? n(ev.value) : n(animal.acquisitionCost), date: ev?.date || animal.acquisitionDate || '' };
-  const led = ledger.find((l) => !l.voided && l.type === 'animal_purchase_paid' && !l.exchangeId && ((ev && l.eventId === ev.id) || (l.animalId === animal.id && (!ev || l.date === ev.date))));
+  const leds = ledger.filter((l) => !l.voided && l.type === 'animal_purchase_paid' && !l.exchangeId && ((ev && l.eventId === ev.id) || (l.animalId === animal.id && (!ev || l.date === ev.date))));
+  const led = leds[0];
+  if (leds.length > 1 && ev && leds.every((l) => l.eventId === ev.id)) return { ...out, from: 'partner', partnerId: led.partnerId, multi: true, partners: leds.map((l) => ({ partnerId: l.partnerId, amount: n(l.amount) })) }; // اشتراه أكثر من شريك
   if (led) return { ...out, from: 'partner', partnerId: led.partnerId, ledgerId: led.id };
   const c = cash.find((t) => !t.voided && t.type === 'animal_purchase' && (t.animalId === animal.id || (!t.animalId && t.description === `شراء ${animal.tag}`)));
   if (c) return { ...out, from: 'account', accountId: c.accountId, cashId: c.id };
