@@ -75,11 +75,12 @@ export function Table({ columns, rows, empty, footer, onRow }) {
   if (!rows.length) return empty || <Empty />;
   const cols = columns.filter((c) => (c.label !== '' || c.key === '_a') && !c.hideMobile);
   const allVis = columns.filter((c) => c.label !== '' || c.key === '_a');
+  const many = allVis.filter((c) => c.key !== '_a').length > 7; // جداول كثيرة الأعمدة: بطاقات حتى الشاشات الكبيرة جداً بدل تمرير أفقي
   const footCells = footer && footer.props ? Children.toArray(footer.props.children) : [];
   return (
     <>
       {/* ---- mobile cards ---- */}
-      <div className="space-y-2.5 md:hidden">
+      <div className={`space-y-2.5 ${many ? 'xl:hidden' : 'md:hidden'}`}>
         {rows.map((r, i) => (
           <div key={r.id || i} onClick={onRow ? () => onRow(r) : undefined} className={`rounded-xl border border-slate-100 bg-slate-50/50 p-3 ${onRow ? 'cursor-pointer active:bg-slate-100' : ''}`}>
             {cols.filter((c) => c.key !== '_a').map((c) => (
@@ -103,8 +104,8 @@ export function Table({ columns, rows, empty, footer, onRow }) {
         )}
       </div>
       {/* ---- desktop table ---- */}
-      <div className="hidden overflow-x-auto md:block">
-        <table className="w-full min-w-[600px] text-sm">
+      <div className={`hidden overflow-x-auto ${many ? 'xl:block' : 'md:block'}`}>
+        <table className="w-full text-sm">
           <thead><tr className="bg-slate-50 text-slate-500">{columns.map((c) => <th key={c.key} className="px-3 py-2.5 text-right font-bold">{c.label}</th>)}</tr></thead>
           <tbody>
             {rows.map((r, i) => (
