@@ -66,7 +66,7 @@ export function FieldInput({ f, register, errors, setValue, getValues }) {
 }
 
 /** Reusable form modal. Used by CrudPage and by custom pages. */
-export function FormModal({ open, onClose, title, fields, defaults, onSubmit, submitLabel = 'حفظ' }) {
+export function FormModal({ open, onClose, title, fields, defaults, onSubmit, submitLabel = 'حفظ', intro }) {
   const schema = useMemo(() => buildSchema(fields), [fields]);
   const { register, handleSubmit, setValue, getValues, watch, formState: { errors, isSubmitting }, reset } = useForm({ resolver: zodResolver(schema), values: defaults });
   const vals = watch(); const shown = fields.filter((f) => !f.showIf || f.showIf(vals));
@@ -79,6 +79,7 @@ export function FormModal({ open, onClose, title, fields, defaults, onSubmit, su
     <Modal open={open} onClose={onClose} title={title} wide={fields.length > 6}>
       <form onSubmit={go} className="space-y-3">
         <Toast msg={err} />
+        {intro}
         <div className="grid gap-3 sm:grid-cols-2">{shown.map((f) => <div key={f.name} className={f.type === 'textarea' ? 'sm:col-span-2' : ''}><FieldInput f={f} register={register} errors={errors} setValue={setValue} getValues={getValues} /></div>)}</div>
         <div className="flex justify-end gap-2 pt-2"><button type="button" className="btn btn-ghost" onClick={onClose}>إلغاء</button><button className="btn btn-primary" disabled={isSubmitting}>{submitLabel}</button></div>
       </form>
@@ -88,7 +89,7 @@ export function FormModal({ open, onClose, title, fields, defaults, onSubmit, su
 
 /** Config-driven list + add/edit/void page.
  * props: title, subtitle, col, fields, cols(ctx)=>[], defaults, searchKeys, create(user,data), useCtx(), summary(rows,ctx), actions(row,ctx), emptyHint, filter(row) */
-export default function CrudPage({ title, subtitle, col, fields, cols, defaults = {}, searchKeys = [], create, useCtx, summary, rowActions, emptyHint, filter, noEdit, extraHeader, createOnlyFields = [], noAdd, update, onVoid, filters = [], onRowClick, openEditRef, editDefaults }) {
+export default function CrudPage({ title, subtitle, col, fields, cols, defaults = {}, searchKeys = [], create, useCtx, summary, rowActions, emptyHint, filter, noEdit, extraHeader, createOnlyFields = [], noAdd, update, onVoid, filters = [], onRowClick, openEditRef, editDefaults, editIntro }) {
   const { user, can } = useAuth();
   const { rows, loading } = useCol(col);
   const ctx = useCtx ? useCtx() : {};
@@ -120,7 +121,8 @@ export default function CrudPage({ title, subtitle, col, fields, cols, defaults 
         {loading ? <div className="p-6 text-center text-slate-400">جارٍ التحميل…</div> :
           <Table columns={columns} rows={shown} onRow={onRowClick ? (r) => onRowClick(r, ctx) : undefined} empty={<Empty title="لا توجد سجلات بعد" hint={emptyHint || 'ابدأ بإضافة أول سجل حقيقي.'}>{can('create') && !noAdd && <button className="btn btn-primary mt-2" onClick={() => { setEdit(null); setOpen(true); }}><Plus size={16} />إضافة أول سجل</button>}</Empty>} />}
       </Card>
-      <FormModal open={open && !(noAdd && !edit)} onClose={() => setOpen(false)} title={edit ? 'تعديل' : 'إضافة'} fields={formFields}
+      <FormModal open={open && !(noAdd && !edit)} onClose={() => setOpen(false)} title={edit ? `تعديل${edit.tag || edit.name || edit.description ? ': ' + (edit.tag || edit.name || edit.description) : ''}` : 'إضافة'} fields={formFields}
+        intro={edit ? <>{editIntro?.(edit, ctx)}{(() => { const ro = fields.filter((f) => createOnlyFields.includes(f.name) && edit[f.name] !== undefined && edit[f.name] !== '' && edit[f.name] !== null).map((f) => [f.label, f.type === 'select' ? (f.options.find(([v]) => v === edit[f.name])?.[1] ?? edit[f.name]) : String(edit[f.name])]); return ro.length ? <div className="rounded-lg bg-slate-50 p-2.5 text-xs text-slate-600"><b>بيانات ثابتة لا تُعدَّل: </b>{ro.map(([k, v]) => `${k}: ${v}`).join(' · ')}</div> : null; })()}</> : null}
         defaults={edit ? { ...Object.fromEntries(formFields.map((f) => [f.name, edit[f.name] ?? ''])), ...(editDefaults ? editDefaults(edit, ctx) : {}) } : Object.fromEntries(formFields.map((f) => [f.name, defaults[f.name] ?? (f.type === 'date' ? today() : f.default ?? '')]))}
         onSubmit={onSubmit} />
     </div>

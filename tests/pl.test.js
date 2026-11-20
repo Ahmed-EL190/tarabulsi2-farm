@@ -11,14 +11,14 @@ describe('animalPLInputs (سياسة الأرباح الجديدة)', () => {
     { animalId: 'v', type: 'sale', date: '2026-03-01', value: 9999, currency: 'SYP' },
     { animalId: 'a1', type: 'sale', date: '2026-03-01', value: 50, currency: 'SYP', voided: true },
   ];
-  it('الشراء لا يدخل أبداً، والبيع يدخل بسعر البيع كاملاً، والتبادل خارج الأرباح، والملغي مُتجاهَل', () => {
+  it('الشراء لا يدخل أبداً، والبيع يدخل بنتيجته (سعر البيع − الشراء)، والتبادل خارج المبيعات، والملغي مُتجاهَل', () => {
     const r = animalPLInputs(ev, animals);
-    expect(r.animalPurchases).toEqual([]); expect(r.animalSales.map((x) => x.amount)).toEqual([1500]);
+    expect(r.animalPurchases).toEqual([]); expect(r.animalSales.map((x) => x.amount)).toEqual([500]); // 1500 − 1000
   });
   it('صافي الربح = كل المبيعات − كل المصروفات التشغيلية (بدون شراء الحيوانات)', () => {
     const r = animalPLInputs(ev, animals);
     const pl = profitAndLoss({ ...r, expenses: [{ id: 'e', date: '2026-02-02', category: 'feed', amount: 300, currency: 'SYP' }], from: '2026-01-01', to: '2026-12-31' });
-    expect(pl.animalSales).toBe(1500); expect(pl.animalPurchases).toBe(0); expect(pl.netProfit).toBe(1200);
+    expect(pl.animalSales).toBe(500); expect(pl.animalPurchases).toBe(0); expect(pl.netProfit).toBe(200);
   });
 });
 describe('herdState', () => {

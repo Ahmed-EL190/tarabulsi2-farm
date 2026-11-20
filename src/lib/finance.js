@@ -311,7 +311,14 @@ export function allocateProfit(netProfit, partners) {
 // ───────────── رأس مال الشركاء + توزيع الأرباح بالأثلاث ─────────────
 /** مجموعة الشريك: owners = شريك ملكية (يدفع رأس المال ويأخذ ثلثه + ثلث المزرعة) · side = شريك ربح فقط (يشاركه ثلث الأرباح).
  *  لو لم تُحدَّد: من له نسبة ملكية > 0 فهو من الملاك. */
-export const profitGroupOf = (p) => (p?.profitGroup === 'owners' || p?.profitGroup === 'side' ? p.profitGroup : (n(p?.ownershipPct) > 0 ? 'owners' : 'side'));
+export const profitGroupOf = (p) => {
+  if (p?.profitGroup === 'farm') return 'farm';
+  if (p?.profitGroup === 'owners') return 'owners';
+  // سجل اسمه «المزرعة» هو حساب ثلث رأس المال، حتى لو كان محفوظاً بالخطأ كـ«شريك ربح فقط»
+  if (/^\s*(حساب\s*)?(ال)?مزرعة\s*$/.test(String(p?.name || ''))) return 'farm';
+  if (p?.profitGroup === 'side') return 'side';
+  return n(p?.ownershipPct) > 0 ? 'owners' : 'side';
+};
 
 /** رأس مال الشريك = ثمن البقر الذي دفعه + المعدات التي دفعها (فئة «معدات»). يُحسب تلقائياً من حسابه، حتى تاريخ `to` إن وُجد. */
 export function partnerInvestment(partnerId, { ledger = [], expenses = [], animals = [] } = {}, { currency = 'SYP', to } = {}) {
@@ -346,7 +353,7 @@ function weightsOf(list, primary, fallback) {
  *  تخصيص فقط — لا يُنشئ أي حركة نقدية. المجموع يساوي صافي الربح تماماً (الربح السالب يُوزَّع بنفس النسب). */
 export function allocateProfitByThirds(netProfit, partners, capitalById = {}) {
   const owners = partners.filter((p) => profitGroupOf(p) === 'owners');
-  const side = partners.filter((p) => profitGroupOf(p) === 'side');
+  const side = partners.filter((p) => profitGroupOf(p) === 'side'); // سجل «المزرعة» مستبعد: ثلثها يذهب لمن دفع رأس المال
   if (!owners.length) throw new Error('لا يوجد شريك ملكية (أبو وليد / عمار) لتوزيع ثلثَي الأرباح عليه');
   const total = round2(netProfit);
   const sideThird = side.length ? round2(total / 3) : 0;
@@ -374,15 +381,17 @@ export function effectiveProfitShares(partners, capitalById = {}) {
 
 /** مدخلات الأرباح الخاصة بالمواشي — مصدر واحد للتسويات والتقارير. */
 export function animalPLInputs(events = [], animals = []) {
-  // سياسة الأرباح: شراء الحيوانات لا يدخل أبداً؛ وبيع الحيوانات يدخل بسعر البيع كاملاً ضمن المبيعات. التبادل خارج الأرباح (ليس بيعاً نقدياً).
+  // سياسة الأرباح: شراء الحيوانات لا يدخل أبداً (رأس مال). بيع الحيوان يدخل بنتيجته = سعر البيع − سعر شرائه (ربح أو خسارة تتقاسمها الأثلاث على الجميع)؛
+  // ومن لا سعر شراء له (مولود بالمزرعة) يدخل بسعر البيع كاملاً. نتيجة التبادل تدخل بنفس الطريقة (انظر exchangeResults).
   const byId = Object.fromEntries(animals.map((a) => [a.id, a]));
   const animalSales = [];
   for (const e of events) {
     if (e.voided || byId[e.animalId]?.voided || e.type !== 'sale') continue;
-    animalSales.push({ date: e.date, currency: e.currency || 'SYP', amount: n(e.value) });
+    const cost = n(e.costBasis) || n(byId[e.animalId]?.acquisitionCost);
+    animalSales.push({ date: e.date, currency: e.currency || 'SYP', amount: round2(n(e.value) - (cost > 0 ? cost : 0)) });
   }
   // نتيجة التبادل: تدخل الأرباح فقط لو اختير أن تكون على المزرعة (على الشركاء تُقيَّد في حساباتهم)
-  const exchangeResults = events.filter((e) => !e.voided && !byId[e.animalId]?.voided && e.type === 'exchange_out' && e.resultBearer === 'farm' && n(e.result) !== 0).map((e) => ({ date: e.date, currency: e.currency || 'SYP', amount: n(e.result) }));
+  const exchangeResults = events.filter((e) => !e.voided && !byId[e.animalId]?.voided && e.type === 'exchange_out' && (e.resultBearer || 'farm') === 'farm' && n(e.result) !== 0).map((e) => ({ date: e.date, currency: e.currency || 'SYP', amount: n(e.result) }));
   return { animalSales, animalPurchases: [], exchangeResults };
 }
 
@@ -545,8 +554,8 @@ export function animalExchangeInfo(animal, { events = [], ledger = [], cash = []
   const res = { exchangeId: exId, date: inEv.date, currency: inEv.currency || animal.currency || 'SYP', inValue, outs, outValue, diff, paidBy: 'none', partnerId: null, accountId: null };
   if (!exId || diff === 0) return res;
   if (diff > 0) {
-    const led = ledger.find((l) => !l.voided && l.type === 'animal_purchase_paid' && l.exchangeId === exId);
-    if (led) return { ...res, paidBy: 'partner', partnerId: led.partnerId };
+    const leds = ledger.filter((l) => !l.voided && l.type === 'animal_purchase_paid' && l.exchangeId === exId);
+    if (leds.length) return { ...res, paidBy: 'partner', partnerId: leds[0].partnerId, partners: leds.map((l) => ({ partnerId: l.partnerId, amount: n(l.amount) })) }; // شريك أو أكثر دفعوا الفرق
     const c = cash.find((t) => !t.voided && t.exchangeId === exId && t.type === 'animal_exchange_payment');
     if (c) return { ...res, paidBy: 'account', accountId: c.accountId };
     if (inEv.diffPaidBy) return { ...res, paidBy: 'partner', partnerId: inEv.diffPaidBy };

@@ -16,7 +16,7 @@ body { @apply bg-[#f4f6f5] text-slate-800 font-sans antialiased; overflow-x: hid
   .recharts-wrapper { max-width: 100%; }
 }
 img, svg, video, canvas { max-width: 100%; }
-td, th { overflow-wrap: anywhere; }
+td, th { overflow-wrap: break-word; word-break: normal; } /* لا نكسر الكلمة العربية في منتصفها */
 @media (max-width: 639px) {
   h1, h2, h3 { overflow-wrap: anywhere; }
   .btn { white-space: normal; text-align: center; line-height: 1.3; }

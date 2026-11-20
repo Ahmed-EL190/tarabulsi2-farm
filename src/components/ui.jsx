@@ -33,7 +33,7 @@ export function Stat({ label, value, sub, icon: Icon, tone = 'green', className 
   );
 }
 const BADGE = { green: 'bg-emerald-50 text-emerald-700', amber: 'bg-amber-50 text-amber-700', red: 'bg-rose-50 text-rose-700', blue: 'bg-sky-50 text-sky-700', gray: 'bg-slate-100 text-slate-600' };
-export const Badge = ({ tone = 'gray', children }) => <span className={`rounded-full px-2.5 py-0.5 text-xs font-bold ${BADGE[tone]}`}>{children}</span>;
+export const Badge = ({ tone = 'gray', children }) => <span className={`inline-block whitespace-nowrap rounded-full px-2.5 py-0.5 text-xs font-bold ${BADGE[tone]}`}>{children}</span>;
 
 export function Empty({ title = 'لا توجد بيانات بعد', hint, children }) {
   return (

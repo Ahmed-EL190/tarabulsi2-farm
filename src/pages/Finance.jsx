@@ -136,6 +136,7 @@ export function Expenses() {
   return (<>
     <CrudPage title="المصروفات" subtitle="فلتر بالفئة وحالة الدفع. المصروف المستحق ≠ المدفوع. الدفع من حساب أو من شريك (دون تكرار المصروف)" col="expenses" searchKeys={['description', 'supplierName']} useCtx={ctx} defaults={{ payDate: '' }} extraHeader={<LinkPartnerExpenses />}
       onVoid={(u, r, c, why) => voidExpenseCascade(u, r, c, why)}
+      editIntro={(rec, c) => { const pos = expensePosition(rec, c.pays); const mv = (c.stock || []).find((m) => m.expenseId === rec.id && !m.voided); return <div className="grid grid-cols-2 gap-2 rounded-lg border border-emerald-200 bg-emerald-50/40 p-3 text-sm sm:grid-cols-4"><div><div className="text-xs text-slate-500">المبلغ</div><b className="num">{fmt(rec.amount)} {rec.currency}</b></div><div><div className="text-xs text-slate-500">المدفوع</div><b className="num">{fmt(pos.paid)}</b></div><div><div className="text-xs text-slate-500">المتبقي</div><b className="num">{fmt(pos.outstanding)}</b></div><div><div className="text-xs text-slate-500">المخزون المرتبط</div><b>{mv ? `${mv.itemName || ''} +${fmt(mv.qty)}` : '—'}</b></div></div>; }}
       filters={[{ key: '_m', label: 'الشهر', allLabel: 'كل الشهور', options: months, test: (r, v) => String(r.date || '').startsWith(v) }, { key: 'category', label: 'الفئة', options: allExpenseCategories(), allLabel: 'كل الفئات' }, { key: '_st', label: 'حالة الدفع', allLabel: 'الكل', options: [['paid', 'مدفوع'], ['partial', 'مدفوع جزئياً'], ['unpaid', 'غير مدفوع']], test: (r, v, c) => expensePosition(r, c.pays || []).status === v }]}
       summary={(rows, { pays = [] }) => { const lst = (o) => (Object.keys(o).length ? Object.entries(o).map(([c, v]) => money(v, c)).join(' | ') : money(0)); return rows.length ? <div className="mb-1 grid grid-cols-2 gap-3 sm:grid-cols-3"><Stat label="عدد المصروفات المعروضة" value={rows.length} /><Stat label="إجمالي المستحق" value={<span className="text-base sm:text-xl">{lst(sumByCurrency(rows, (r) => r.amount))}</span>} tone="red" /><Stat className="col-span-2 sm:col-span-1" label="غير المدفوع منها" value={<span className="text-base sm:text-xl">{lst(sumByCurrency(rows, (r) => expensePosition(r, pays).outstanding))}</span>} tone="amber" /></div> : null; }}
       fields={[{ name: 'date', label: 'تاريخ المصروف / الفاتورة', type: 'date', required: true }, { name: 'category', label: 'الفئة', type: 'select', required: true, options: [...allExpenseCategories(), NEW_CAT], default: 'feed' }, { name: 'newCategory', label: 'اسم الفئة الجديدة', type: 'text', showIf: (v) => v.category === '__new__' }, { name: 'description', label: 'الوصف', type: 'text', required: true }, { name: 'amount', label: 'المبلغ', type: 'number', required: true, positive: true }, cur,
@@ -216,7 +217,7 @@ export function Settlements() {
   const distributedFor = (stId, pid) => round2(led.filter((e) => e.type === 'profit_distribution' && e.settlementId === stId && e.partnerId === pid && !e.voided).reduce((a, e) => a + Number(e.amount), 0));
   const finalize = async () => { setErr(''); try { if (!confirm('تأكيد اعتماد التسوية؟ سيتم قيد تخصيص الأرباح في دفاتر الشركاء (بدون أي حركة نقدية).')) return; await finalizeSettlement(user, { from, to, currency: c, ...calc.pl, receivables: calc.recv, payables: calc.payable, loanBalances: calc.loanBal, capital: calc.capital, previousDistributions: calc.prevDist, allocBreakdown: calc.alloc.breakdown }, partners, hist, calc.alloc.allocations.map((a) => ({ partnerId: a.partnerId, amount: a.amount, group: a.group, capital: a.capital, ratioPct: a.ratioPct, fromOwnThird: a.fromOwnThird, fromFarmThird: a.fromFarmThird }))); } catch (e) { setErr(e.message); } };
   const lines = [
-    ['إيراد الحليب (التسليمات)', calc.pl.milkRevenue], ['إيرادات أخرى', calc.pl.otherIncome], ['مبيعات المواشي (بسعر البيع كاملاً)', calc.pl.animalSales], ['إجمالي الإيراد', calc.pl.revenue, 'b'],
+    ['إيراد الحليب (التسليمات)', calc.pl.milkRevenue], ['إيرادات أخرى', calc.pl.otherIncome], ['ربح/خسارة بيع المواشي (سعر البيع − سعر الشراء)', calc.pl.animalSales], ['إجمالي الإيراد', calc.pl.revenue, 'b'],
     ['مصروفات التشغيل (كلها — بدون شراء الحيوانات)', calc.pl.operatingExpenses], ['إجمالي المصروفات', calc.pl.totalExpenses, 'b'],
     ...(calc.pl.exchangeResult ? [['نتيجة تبادل الحيوانات على المزرعة (ربح +/ خسارة −)', calc.pl.exchangeResult]] : []),
     ['صافي الربح / الخسارة', calc.pl.netProfit, 'net'],
@@ -239,17 +240,17 @@ export function Settlements() {
         {calc.pl.netProfit < 0 && <div className="mt-3 rounded-lg bg-amber-50 p-3 text-sm font-bold text-amber-800">الفترة خاسرة: التخصيص سيُسجَّل بالسالب على حصص الشركاء (خصم من أرصدتهم) ولا يمكن توزيعه نقدياً.</div>}
         {calc.alloc && <><h4 className="mb-1 mt-4 font-bold">التخصيص المقترح (بالأثلاث)</h4>
           <div className="mb-2 grid grid-cols-1 gap-2 text-sm sm:grid-cols-3">
-            <div className="rounded-lg bg-slate-50 p-2">ثلث شركاء الربح فقط: <b className="num">{fmt(calc.alloc.breakdown.sideThird)}</b></div>
-            <div className="rounded-lg bg-slate-50 p-2">ثلث شركاء الملكية: <b className="num">{fmt(calc.alloc.breakdown.ownersThird)}</b></div>
-            <div className="rounded-lg bg-slate-50 p-2">ثلث المزرعة (لشركاء الملكية): <b className="num">{fmt(calc.alloc.breakdown.farmThird)}</b></div>
+            <div className="rounded-lg bg-emerald-50 p-2 text-emerald-900">① ثلث رأس المال (العجول والمعدات): <b className="num">{fmt(calc.alloc.breakdown.farmThird)}</b><div className="text-xs opacity-80">لمن دفع رأس المال بنسبة ما دفع كل واحد</div></div>
+            <div className="rounded-lg bg-slate-50 p-2">② ثلث {calc.alloc.allocations.filter((a) => a.group === 'owners').map((a) => name(a.partnerId)).join(' و')}: <b className="num">{fmt(calc.alloc.breakdown.ownersThird)}</b></div>
+            <div className="rounded-lg bg-slate-50 p-2">③ ثلث {calc.alloc.allocations.filter((a) => a.group === 'side').map((a) => name(a.partnerId)).join(' و') || 'شركاء الربح فقط'}: <b className="num">{fmt(calc.alloc.breakdown.sideThird)}</b></div>
           </div>
           <Table rows={calc.alloc.allocations.map((a) => ({ id: a.partnerId, ...a }))} columns={[
             { key: 'n', label: 'الشريك', render: (r) => name(r.partnerId) },
             { key: 'g', label: 'المجموعة', render: (r) => (r.group === 'owners' ? 'ملكية' : 'ربح فقط') },
             { key: 'cap', label: 'رأس ماله (بقر + معدات)', render: (r) => (r.group === 'owners' ? <span className="num">{fmt(r.capital)}</span> : '—') },
-            { key: 'pct', label: 'نسبته داخل المجموعة', render: (r) => `${r.ratioPct}%` },
-            { key: 'o', label: 'من ثلث مجموعته', render: (r) => <span className="num">{fmt(r.fromOwnThird)}</span> },
-            { key: 'f', label: 'من ثلث المزرعة', render: (r) => (r.group === 'owners' ? <span className="num">{fmt(r.fromFarmThird)}</span> : '—') },
+            { key: 'pct', label: 'نسبته في الثلث', render: (r) => `${r.ratioPct}%` },
+            { key: 'f', label: '① من ثلث رأس المال', render: (r) => (r.group === 'owners' ? <span className="num">{fmt(r.fromFarmThird)}</span> : '—') },
+            { key: 'o', label: '② / ③ من ثلثه', render: (r) => <span className="num">{fmt(r.fromOwnThird)}</span> },
             { key: 'amount', label: 'الحصة', render: (r) => <b className="num">{fmt(r.amount)}</b> }]} />
           {calc.alloc.breakdown.ownersBasis !== 'capital' && <div className="mt-2 rounded-lg bg-amber-50 p-2 text-xs font-bold text-amber-800">لا يوجد رأس مال مسجَّل لشركاء الملكية حتى {to} فالقسمة {calc.alloc.breakdown.ownersBasis === 'ownership' ? 'بحسب نسبة الملكية المسجَّلة' : 'بالتساوي'}. سجّل شراء البقر/المعدات على حساب الشريك لتُحسب النسبة تلقائياً.</div>}
           <div className="mt-2 text-xs text-slate-500">نسبة كل شريك ملكية = رأس ماله ÷ مجموع رأس مال الملاك (حتى نهاية الفترة). رأس المال = ثمن البقر + المعدات التي دفعها من ماله.</div></>}

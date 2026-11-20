@@ -86,3 +86,21 @@ describe('الفرق المستلَم يعود لدافع ثمن الحيوان 
     expect(info).toMatchObject({ diff: -500, paidBy: 'partner', partnerId: 'w', partners: [{ partnerId: 'w', amount: 500 }] });
   });
 });
+
+describe('الخسارة تتقسم على الجميع (بيع وتبادل)', () => {
+  it('بيع بخسارة: تدخل صافي الأرباح بالسالب؛ والمولود بلا سعر شراء بسعره كاملاً', () => {
+    const animals = [{ id: 'a', acquisitionCost: 5000 }, { id: 'b' }];
+    const ev = [{ animalId: 'a', type: 'sale', date: '2026-02-01', value: 4000, currency: 'SYP' }, { animalId: 'b', type: 'sale', date: '2026-02-02', value: 700, currency: 'SYP' }];
+    const ap = F.animalPLInputs(ev, animals); expect(ap.animalSales.map((x) => x.amount)).toEqual([-1000, 700]);
+    expect(F.profitAndLoss({ ...ap, from: '2026-01-01', to: '2026-12-31' }).netProfit).toBe(-300);
+  });
+  it('التبادل القديم بلا «على من» يُعامَل على المزرعة (الجميع)، وما على شريك محدد يبقى عليه', () => {
+    const ev = [{ animalId: 'x', type: 'exchange_out', date: '2026-03-01', result: -100 }, { animalId: 'y', type: 'exchange_out', date: '2026-03-01', result: -50, resultBearer: 'partners' }];
+    expect(F.animalPLInputs(ev, []).exchangeResults.map((x) => x.amount)).toEqual([-100]);
+  });
+  it('فرق التبادل بشريكين: كلاهما يظهر في بيانات الحيوان الوارد', () => {
+    const info = F.animalExchangeInfo({ id: 'N' }, { events: [{ type: 'exchange_out', animalId: 'a', tag: 'a', value: 1000, exchangeId: 'X' }, { type: 'exchange_in', animalId: 'N', value: 1500, exchangeId: 'X', date: 'd' }],
+      ledger: [{ type: 'animal_purchase_paid', exchangeId: 'X', partnerId: 'w', amount: 300 }, { type: 'animal_purchase_paid', exchangeId: 'X', partnerId: 'a', amount: 200 }] });
+    expect(info).toMatchObject({ diff: 500, paidBy: 'partner', partners: [{ partnerId: 'w', amount: 300 }, { partnerId: 'a', amount: 200 }] });
+  });
+});

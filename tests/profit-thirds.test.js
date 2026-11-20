@@ -64,3 +64,27 @@ describe('توزيع الأرباح بالأثلاث', () => {
     expect(profitGroupOf({ ownershipPct: 0, profitGroup: 'owners' })).toBe('owners');
   });
 });
+
+describe('سجل «المزرعة» لا يأخذ من ثلث شركاء الربح فقط', () => {
+  const withFarm = [...P, { id: 'f', name: 'المزرعة', ownershipPct: 0, profitSharePct: 33.33 }];
+  it('يُتعرَّف عليه بالاسم أو بالاختيار، ويُستبعد من التوزيع', () => {
+    expect(profitGroupOf({ name: 'المزرعة', ownershipPct: 0 })).toBe('farm'); expect(profitGroupOf({ name: 'x', profitGroup: 'farm' })).toBe('farm');
+    const r = allocateProfitByThirds(900, withFarm, { w: 6000, a: 4000 });
+    expect(r.allocations.find((a) => a.partnerId === 'f')).toBeUndefined();
+    expect(amt(r, 'g')).toBe(150); expect(amt(r, 's')).toBe(150); expect(amt(r, 'w')).toBe(360); expect(amt(r, 'a')).toBe(240); expect(sum(r)).toBe(900);
+  });
+  it('نفس أرقام لقطة الشاشة: أبو وليد 489.5م وعمار 83م وأبو غفير وسعيد بالتساوي', () => {
+    const e = effectiveProfitShares(withFarm, { w: 489500000, a: 83000000 });
+    expect(e).toEqual({ w: 57, a: 9.67, g: 16.67, s: 16.67 });
+  });
+});
+
+describe('المزرعة المحفوظة صراحةً كشريك ربح فقط', () => {
+  it('الاسم يتغلّب: تبقى «مزرعة» ولا تدخل ثلث أبو غفير وسعيد', () => {
+    const ps = [...P, { id: 'f', name: 'المزرعة', ownershipPct: 0, profitSharePct: 50, profitGroup: 'side' }];
+    expect(profitGroupOf(ps[4])).toBe('farm');
+    const r = allocateProfitByThirds(900, ps.map((p) => (p.id === 'g' || p.id === 's' ? { ...p, profitSharePct: 25 } : p)), { w: 6000, a: 4000 });
+    expect(amt(r, 'g')).toBe(150); expect(amt(r, 's')).toBe(150); expect(r.allocations.some((a) => a.partnerId === 'f')).toBe(false);
+  });
+  it('الاختيار الصريح «ملكية» لا يُلغى بالاسم', () => { expect(profitGroupOf({ name: 'المزرعة', profitGroup: 'owners' })).toBe('owners'); });
+});
