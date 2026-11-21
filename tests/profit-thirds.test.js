@@ -88,3 +88,27 @@ describe('المزرعة المحفوظة صراحةً كشريك ربح فقط'
   });
   it('الاختيار الصريح «ملكية» لا يُلغى بالاسم', () => { expect(profitGroupOf({ name: 'المزرعة', profitGroup: 'owners' })).toBe('owners'); });
 });
+
+import { isCapitalClosed, capitalStatus } from '../src/lib/finance.js';
+describe('إغلاق رأس المال: الربح نصفان', () => {
+  const ps = [...P, { id: 'f', name: 'المزرعة', ownershipPct: 0, profitSharePct: 50 }];
+  it('بعد الإغلاق لا ثلث لرأس المال: نصف للملاك بنسبة رأس المال، ونصف لأبو غفير وسعيد', () => {
+    const r = allocateProfitByThirds(1000, ps, { w: 6000, a: 4000 }, { capitalClosed: true });
+    expect(r.breakdown).toMatchObject({ mode: 'halves', sideThird: 500, ownersThird: 500, farmThird: 0 });
+    expect(amt(r, 'g')).toBe(250); expect(amt(r, 's')).toBe(250); expect(amt(r, 'w')).toBe(300); expect(amt(r, 'a')).toBe(200); expect(sum(r)).toBe(1000);
+    expect(r.allocations.some((a) => a.partnerId === 'f')).toBe(false);
+  });
+  it('المجموع مطابق دائماً (قروش وخسارة) والنسب الفعلية 30/20/25/25', () => {
+    for (const np of [100.01, -333.33, 7]) expect(sum(allocateProfitByThirds(np, ps, { w: 3333, a: 6667 }, { capitalClosed: true }))).toBe(np);
+    expect(effectiveProfitShares(ps, { w: 6000, a: 4000 }, { capitalClosed: true })).toEqual({ w: 30, a: 20, g: 25, s: 25 });
+  });
+  it('بدون إغلاق يبقى بالأثلاث كما هو', () => { expect(allocateProfitByThirds(900, ps, { w: 6000, a: 4000 }).breakdown.mode).toBe('thirds'); });
+  it('تاريخ الإغلاق: الفترات التي تبدأ فيه أو بعده فقط', () => {
+    expect(isCapitalClosed('', '2026-05-01')).toBe(false); expect(isCapitalClosed('2026-06-01', '2026-05-31')).toBe(false); expect(isCapitalClosed('2026-06-01', '2026-06-01')).toBe(true);
+  });
+  it('حالة رأس المال: المستثمَر وما بقي مستحقاً، ويُعتبر مسدَّداً عند الصفر', () => {
+    const led = [{ partnerId: 'w', type: 'animal_purchase_paid', amount: 1000, date: 'd', currency: 'SYP' }, { partnerId: 'a', type: 'animal_purchase_paid', amount: 500, date: 'd', currency: 'SYP' }];
+    expect(capitalStatus(P, { ledger: led })).toMatchObject({ invested: 1500, owed: 1500, repaid: false });
+    expect(capitalStatus(P, { ledger: [...led, { partnerId: 'w', type: 'animal_purchase_repaid', amount: 1000, date: 'd', currency: 'SYP' }, { partnerId: 'a', type: 'animal_purchase_repaid', amount: 500, date: 'd', currency: 'SYP' }] })).toMatchObject({ owed: 0, repaid: true });
+  });
+});

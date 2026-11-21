@@ -351,11 +351,30 @@ function weightsOf(list, primary, fallback) {
  *  ثلث لشركاء الملكية (أبو وليد وعمار) · ثلث المزرعة يأخذه شركاء الملكية أيضاً.
  *  الثلثان الأخيران يُقسَّمان بين الملاك بنسبة رأس مال كل واحد (`capitalById`: بقر + معدات).
  *  تخصيص فقط — لا يُنشئ أي حركة نقدية. المجموع يساوي صافي الربح تماماً (الربح السالب يُوزَّع بنفس النسب). */
-export function allocateProfitByThirds(netProfit, partners, capitalById = {}) {
+/** رأس المال مُغلق في هذا التاريخ؟ (closedFrom = تاريخ الإغلاق من الإعدادات؛ فارغ = ما زال مفتوحاً) */
+export const isCapitalClosed = (closedFrom, date) => !!closedFrom && !!date && String(date) >= String(closedFrom);
+/** حالة رأس المال: المستثمَر (بقر + معدات للملاك) وما بقي مستحقاً لهم من ثمن البقر والتبادل. */
+export function capitalStatus(partners = [], data = {}) {
+  const act = partners.filter((p) => !p.voided && p.status !== 'inactive');
+  const invested = round2(act.filter((p) => profitGroupOf(p) === 'owners').reduce((t, p) => t + partnerInvestment(p.id, data).total, 0));
+  const owed = round2(act.reduce((t, p) => t + Math.max(0, partnerDebt(p.id, data.ledger || []).purchases), 0));
+  return { invested, owed, repaid: invested > 0 && owed <= 0 };
+}
+export function allocateProfitByThirds(netProfit, partners, capitalById = {}, { capitalClosed = false } = {}) {
   const owners = partners.filter((p) => profitGroupOf(p) === 'owners');
   const side = partners.filter((p) => profitGroupOf(p) === 'side'); // سجل «المزرعة» مستبعد: ثلثها يذهب لمن دفع رأس المال
   if (!owners.length) throw new Error('لا يوجد شريك ملكية (أبو وليد / عمار) لتوزيع ثلثَي الأرباح عليه');
   const total = round2(netProfit);
+  if (capitalClosed) { // رأس المال أُغلق: لا ثلث له، والربح نصفان: شركاء الملكية (بنسبة رأس المال) وشركاء الربح فقط
+    const sideHalf = side.length ? round2(total / 2) : 0, ownersHalf = round2(total - sideHalf);
+    const ow2 = weightsOf(owners, (p) => n(capitalById[p.id]), (p) => n(p.ownershipPct)), sw2 = weightsOf(side, (p) => n(p.profitSharePct));
+    const os = splitByWeights(ownersHalf, ow2.w), ss = side.length ? splitByWeights(sideHalf, sw2.w) : [];
+    const ot = ow2.w.reduce((a, v) => a + v, 0), st = sw2.w.reduce((a, v) => a + v, 0);
+    return { allocations: [
+      ...owners.map((p, i) => ({ partnerId: p.id, group: 'owners', capital: round2(n(capitalById[p.id])), ratioPct: round2(ow2.w[i] / ot * 100), fromOwnThird: os[i], fromFarmThird: 0, amount: os[i] })),
+      ...side.map((p, i) => ({ partnerId: p.id, group: 'side', capital: 0, ratioPct: round2(sw2.w[i] / st * 100), fromOwnThird: ss[i], fromFarmThird: 0, amount: ss[i] }))],
+      breakdown: { mode: 'halves', sideThird: sideHalf, ownersThird: ownersHalf, farmThird: 0, ownersBasis: ow2.basis === 'primary' ? 'capital' : ow2.basis === 'fallback' ? 'ownership' : 'equal' } };
+  }
   const sideThird = side.length ? round2(total / 3) : 0;
   const farmThird = round2(total / 3);
   const ownersThird = round2(total - sideThird - farmThird);
@@ -370,12 +389,12 @@ export function allocateProfitByThirds(netProfit, partners, capitalById = {}) {
     ...owners.map((p, i) => ({ partnerId: p.id, group: 'owners', capital: round2(n(capitalById[p.id])), ratioPct: round2(ow.w[i] / owTot * 100), fromOwnThird: ownShare[i], fromFarmThird: farmShare[i], amount: round2(ownShare[i] + farmShare[i]) })),
     ...side.map((p, i) => ({ partnerId: p.id, group: 'side', capital: 0, ratioPct: round2(sw.w[i] / swTot * 100), fromOwnThird: sideShare[i], fromFarmThird: 0, amount: sideShare[i] })),
   ];
-  return { allocations, breakdown: { sideThird, ownersThird, farmThird, ownersBasis: ow.basis === 'primary' ? 'capital' : ow.basis === 'fallback' ? 'ownership' : 'equal' } };
+  return { allocations, breakdown: { mode: 'thirds', sideThird, ownersThird, farmThird, ownersBasis: ow.basis === 'primary' ? 'capital' : ow.basis === 'fallback' ? 'ownership' : 'equal' } };
 }
 /** النسبة الفعلية لكل شريك من إجمالي الأرباح (للعرض): { partnerId: % } */
-export function effectiveProfitShares(partners, capitalById = {}) {
+export function effectiveProfitShares(partners, capitalById = {}, opts = {}) {
   if (!partners.some((p) => profitGroupOf(p) === 'owners')) return {};
-  const { allocations } = allocateProfitByThirds(1000000, partners, capitalById);
+  const { allocations } = allocateProfitByThirds(1000000, partners, capitalById, opts);
   return Object.fromEntries(allocations.map((a) => [a.partnerId, round2(a.amount / 10000)]));
 }
 
