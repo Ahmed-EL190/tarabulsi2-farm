@@ -114,22 +114,22 @@ export function auditData(D = {}) {
 
   // ═══════════ الشركاء والقروض ═══════════
   const act = live(partners).filter((p) => p.status !== 'inactive'); const hasOwner = act.some((p) => profitGroupOf(p) === 'owners');
-  add('shares', 'الشركاء والقروض', 'warn', 'لا يوجد شريك ملكية فعّال — لا يمكن توزيع الأرباح', hasOwner ? [] : act.map((p) => ({ text: `${p.name}: ${profitGroupOf(p) === 'owners' ? 'ملكية' : 'ربح فقط'}`, resolve: { kind: 'partner-edit', id: p.id } })), { hint: 'حدّد «مجموعة الأرباح» = شريك ملكية لأبو وليد وعمار (أو ضع لهما نسبة ملكية).' });
+  add('shares', 'الشركاء والسلف', 'warn', 'لا يوجد شريك ملكية فعّال — لا يمكن توزيع الأرباح', hasOwner ? [] : act.map((p) => ({ text: `${p.name}: ${profitGroupOf(p) === 'owners' ? 'ملكية' : 'ربح فقط'}`, resolve: { kind: 'partner-edit', id: p.id } })), { hint: 'حدّد «مجموعة الأرباح» = شريك ملكية لأبو وليد وعمار (أو ضع لهما نسبة ملكية).' });
   const loanBad = [];
   for (const l of live(loans)) {
     const hasL = ledLive.some((e) => e.type === 'loan_given' && e.loanId === l.id), hasC = cash.some((t) => t.type === 'loan_received' && t.loanId === l.id);
     if (!hasL) loanBad.push({ text: `قرض ${l.principal} (${PARTNER[l.partnerId]?.name || '؟'}) بلا قيد في حساب الشريك`, link: '/loans' }); if (!hasC) loanBad.push({ text: `قرض ${l.principal} (${PARTNER[l.partnerId]?.name || '؟'}) بلا حركة دخول للصندوق`, link: '/loans' });
     const led = ledLive.filter((e) => e.type === 'loan_given' && e.loanId === l.id).reduce((s, e) => s + n(e.amount), 0); if (hasL && !eq(led, l.principal)) loanBad.push({ text: `قرض ${l.principal}: قيد الشريك ${led}`, link: '/loans' });
   }
-  add('loanLinks', 'الشركاء والقروض', 'error', 'قروض شركاء غير مرتبطة بحساب الشريك أو بالصندوق', loanBad);
+  add('loanLinks', 'الشركاء والسلف', 'error', 'قروض شركاء غير مرتبطة بحساب الشريك أو بالصندوق', loanBad);
   const repBad = [];
   for (const l of live(loans)) {
     const reps = live(loanReps).filter((r) => r.loanId === l.id); const sumR = reps.reduce((s, r) => s + n(r.principalAmount), 0); const sumL = ledLive.filter((e) => e.type === 'loan_principal_repayment' && e.loanId === l.id).reduce((s, e) => s + n(e.amount), 0);
     if (!eq(sumR, sumL)) repBad.push({ text: `قرض ${l.principal} (${PARTNER[l.partnerId]?.name || '؟'}): سدادات القرض ${round2(sumR)} ≠ قيود الشريك ${round2(sumL)}`, link: '/loans' });
     if (loanPosition(l, loanReps).outstandingPrincipal < -0.005) repBad.push({ text: `قرض ${l.principal}: المسدَّد أكبر من أصل القرض`, link: '/loans' });
   }
-  add('loanRepMismatch', 'الشركاء والقروض', 'error', 'سدادات القروض لا تطابق قيود حساب الشريك (أو تتجاوز الأصل)', repBad);
-  add('ledgerNoPartner', 'الشركاء والقروض', 'error', 'قيود حسابات لشريك محذوف أو ملغى', ledLive.filter((l) => !PARTNER[l.partnerId] || PARTNER[l.partnerId].voided).map((l) => ({ text: `${l.date} — ${l.type} ${l.amount}` })));
+  add('loanRepMismatch', 'الشركاء والسلف', 'error', 'سدادات القروض لا تطابق قيود حساب الشريك (أو تتجاوز الأصل)', repBad);
+  add('ledgerNoPartner', 'الشركاء والسلف', 'error', 'قيود حسابات لشريك محذوف أو ملغى', ledLive.filter((l) => !PARTNER[l.partnerId] || PARTNER[l.partnerId].voided).map((l) => ({ text: `${l.date} — ${l.type} ${l.amount}` })));
 
   // ═══════════ التسويات ═══════════
   const st = live(settlements); const stBad = [], allocBad = [], distBad = [];

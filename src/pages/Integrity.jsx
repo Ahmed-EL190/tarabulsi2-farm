@@ -70,7 +70,7 @@ function Resolver({ r, D, user, onClose }) {
   return null;
 }
 
-const AREAS = ['الصندوق', 'المصروفات', 'المبيعات والحليب', 'المواشي', 'الشركاء والقروض', 'التسويات', 'عام'];
+const AREAS = ['الصندوق', 'المصروفات', 'المبيعات والحليب', 'المواشي', 'الشركاء والسلف', 'التسويات', 'عام'];
 
 function CheckCard({ c, user, can, D }) {
   const [open, setOpen] = useState(false); const [msg, setMsg] = useState(''); const [busy, setBusy] = useState(false); const [res, setRes] = useState(null);

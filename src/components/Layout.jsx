@@ -9,7 +9,7 @@ import { useSettings, useStoreStatus } from '../data/db';
 export const NAV = [
   ['/', 'الرئيسية', Home], ['/production', 'إنتاج الحليب', Milk], ['/milk-sales', 'مبيعات الحليب', ShoppingCart],
   ['/customers', 'العملاء والديون المدينة', Users], ['/cash', 'الصندوق والحسابات', Landmark], ['/expenses', 'المصروفات', Receipt],
-  ['/partners', 'الشركاء', UserRoundCog], ['/loans', 'قروض وتمويل الشركاء', HandCoins], ['/settlements', 'تسويات وتوزيع الأرباح', Scale],
+  ['/partners', 'الشركاء', UserRoundCog], ['/loans', 'سلف الشركاء للمزرعة', HandCoins], ['/settlements', 'تسويات وتوزيع الأرباح', Scale],
   ['/animals', 'المواشي', PawPrint],
   ['/inventory', 'الأعلاف والمخزون', Wheat], ['/reports', 'التقارير', FileText], ['/integrity', 'فحص سلامة البيانات', ClipboardCheck], ['/users', 'المستخدمون والصلاحيات', ShieldCheck],
   ['/settings', 'الإعدادات', Settings], ['/audit', 'سجل التدقيق', History],
