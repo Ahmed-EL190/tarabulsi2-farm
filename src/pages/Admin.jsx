@@ -75,7 +75,7 @@ export function Settings() {
   const { user, can } = useAuth(); const s = useSettings(); const [f, setF] = useState(null); const [ok, setOk] = useState('');
   const v = f || s; const set = (k, x) => setF({ ...v, [k]: x });
   const rates = v.rates || {};
-  const save = async () => { await saveRecord(user, 'settings', { farmName: v.farmName, baseCurrency: v.baseCurrency, rates, updatedBy: user.uid }, 'main'); setOk('تم الحفظ'); };
+  const save = async () => { await saveRecord(user, 'settings', { farmName: v.farmName, baseCurrency: v.baseCurrency, rates, stockCostingMode: v.stockCostingMode || 'consumption', updatedBy: user.uid }, 'main'); setOk('تم الحفظ'); };
   return (
     <div>
       <PageHeader title="الإعدادات" />
@@ -85,7 +85,8 @@ export function Settings() {
           <Field label="اسم المزرعة"><input className="input" value={v.farmName} onChange={(e) => set('farmName', e.target.value)} /></Field>
           <Field label="العملة الأساسية"><select className="input" value={v.baseCurrency} onChange={(e) => set('baseCurrency', e.target.value)}>{CURRENCIES.map(([c, l]) => <option key={c} value={c}>{l}</option>)}</select></Field>
           <Field label="سعر الصرف USD → SYP (للتحويل الصريح فقط — لا تُجمع العملات تلقائياً)"><input className="input" type="text" inputMode="decimal" dir="ltr" value={rates['USD->SYP'] || ''} onChange={(e) => set('rates', { ...rates, 'USD->SYP': Number(normNum(e.target.value)) || 0 })} /></Field>
-          <div className="rounded-lg bg-slate-50 p-3 text-xs leading-relaxed text-slate-600 sm:col-span-2"><b>سياسة صافي الربح:</b> المبيعات كلها (حليب + بيع حيوانات بسعر البيع كاملاً + إيرادات أخرى) − كل المصروفات التشغيلية. <b>شراء الحيوانات لا يدخل في الأرباح.</b></div>
+          <Field label="طريقة حساب تكلفة العلف والمخزون في الأرباح"><select className="input" value={v.stockCostingMode || 'consumption'} onChange={(e) => set('stockCostingMode', e.target.value)}><option value="consumption">عند الاستهلاك (موصى به — المشتريات المرتبطة بصنف مخزون لا تدخل الأرباح إلا عند صرفها)</option><option value="purchase">عند الشراء (كل مصروف يدخل فور تسجيله)</option></select></Field>
+          <div className="rounded-lg bg-slate-50 p-3 text-xs leading-relaxed text-slate-600 sm:col-span-2"><b>سياسة صافي الربح:</b> إيراد الحليب + ربح/خسارة بيع الحيوانات (سعر البيع − سعر الشراء) + إيرادات أخرى − المصروفات التشغيلية − خسارة نفوق الحيوانات ± نتيجة التبادل. شراء الحيوانات والمعدات رأس مال لا يدخل الأرباح. العلف المرتبط بالمخزون يدخل بتكلفة ما استُهلك منه.</div>
         </div>
         {can('manageUsers') ? <button className="btn btn-primary mt-4" onClick={save}>حفظ</button> : <p className="mt-3 text-sm text-slate-500">التعديل لمدير النظام فقط.</p>}
       </Card>

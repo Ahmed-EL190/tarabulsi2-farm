@@ -6,7 +6,7 @@ import { Card, Table, Badge, Empty, PageHeader, Stat, Modal, money, fmt, today }
 import { useCol, useSettings, useCustomLists, saveRecord, commit, voidRecord } from '../data/db';
 import { payExpense, addExpenseWithPayment, updateExpenseSynced, updateExpensePayment, voidExpensePayment, updateCustomerPayment, voidCustomerPayment, addCustomCategory, transferCash, addOtherIncome, createLoan, repayLoan, finalizeSettlement, partnerMovement, voidExpenseCascade, voidSettlement, voidDistribution, voidCashTransactions, linkExpensesToPartners, updateLedgerEntry, voidLedgerEntry, saveExpenseEdit, updateCashMovement, cashKind } from '../data/ops';
 import { useAuth } from '../data/auth';
-import { monthLabel, isCapitalClosed, allocateProfitByThirds, partnerInvestment, cashBalances, cashFlowSummary, expensePosition, loanPosition, partnerLedger, profitAndLoss, allocateProfit, validateShares, customerPosition, netCustomerBalance, animalPLInputs, findOrphanCash, round2, sumByCurrency } from '../lib/finance';
+import { monthLabel, isCapitalClosed, capitalOf, stockCosting, allocateProfitByThirds, partnerInvestment, cashBalances, cashFlowSummary, expensePosition, loanPosition, partnerLedger, profitAndLoss, allocateProfit, validateShares, customerPosition, netCustomerBalance, animalPLInputs, findOrphanCash, round2, sumByCurrency } from '../lib/finance';
 import { CURRENCIES, METHODS, allExpenseCategories, NEW_CAT, catLabel, CASH_AR, PARTNER_EXPENSE_CATS } from '../lib/constants';
 
 const cur = { name: 'currency', label: 'العملة', type: 'select', options: CURRENCIES, required: true, default: 'SYP' };
@@ -194,12 +194,16 @@ export function Settlements() {
   const partners = useCol('partners').rows.filter((p) => !p.voided && p.status !== 'inactive'); const led = useCol('partnerCapitalTransactions').rows; const hist = useCol('settlements').rows.filter((h) => !h.voided);
   const ags = useCol('milkSales').rows, dls = useCol('milkDeliveries').rows, exps = useCol('expenses').rows, epays = useCol('expensePayments').rows, pays = useCol('customerPayments').rows, custs = useCol('customers').rows;
   const cash = useCol('cashTransactions').rows, events = useCol('animalEvents').rows, animals = useCol('animals').rows, loans = useCol('partnerLoans').rows, reps = useCol('partnerLoanRepayments').rows;
+  const stockMv = useCol('stockMovements').rows;
   const asExpense = s.animalPurchaseAsExpense !== false;
   const lastTo = hist.filter((h) => (h.currency || 'SYP') === c).map((h) => h.to).sort().pop() || '';
   const clash = hist.find((h) => (h.currency || 'SYP') === c && !(to < h.from || from > h.to));
   const calc = useMemo(() => {
     const ap = animalPLInputs(events, animals, asExpense);
-    const pl = profitAndLoss({ agreements: ags, deliveries: dls, expenses: exps, otherIncome: cash.filter((t) => t.type === 'other_income' && !t.voided), animalSales: ap.animalSales, animalPurchases: ap.animalPurchases, exchangeResults: ap.exchangeResults, from, to, currency: c, animalPurchaseAsExpense: false });
+    // تكلفة العلف عند الاستهلاك (افتراضي): مشتريات المخزون المرتبطة لا تدخل الأرباح عند الشراء، يدخلها الصادر بالمتوسط المرجّح
+    const costing = s.stockCostingMode === 'purchase' ? null : stockCosting(exps, stockMv);
+    const pl = profitAndLoss({ agreements: ags, deliveries: dls, expenses: costing ? exps.filter((e) => !costing.linked.has(e.id)) : exps, otherIncome: cash.filter((t) => t.type === 'other_income' && !t.voided), animalSales: ap.animalSales, animalPurchases: ap.animalPurchases, exchangeResults: ap.exchangeResults, deathLosses: ap.deathLosses, stockConsumption: costing?.consumption || [], from, to, currency: c, animalPurchaseAsExpense: false });
+    const unconsumed = costing ? round2(Object.values(costing.valuation).reduce((t, v) => t + (v.cost[c] || 0), 0)) : 0;
     // الذمم حتى تاريخ نهاية الفترة (وليس حتى اليوم)
     const cc = (x) => (x.currency || 'SYP') === c; const upTo = (x) => !x.date || x.date <= to;
     const nets = custs.map((cu) => netCustomerBalance(cu.id, { agreements: ags.filter((x) => cc(x) && upTo(x)), deliveries: dls.filter(upTo), payments: pays.filter((x) => cc(x) && upTo(x)) }, c === 'SYP' ? cu.openingBalance : 0));
@@ -208,18 +212,20 @@ export function Settlements() {
     const loanBal = round2(loans.filter((l) => !l.voided && l.currency === c).reduce((a, l) => a + loanPosition(l, reps, to).outstandingPrincipal, 0));
     const shares = validateShares(partners); const prevDist = round2(led.filter((e) => e.type === 'profit_distribution' && e.currency === c && !e.voided && e.date <= to).reduce((a, e) => a + Number(e.amount), 0));
     const capital = round2(led.filter((e) => ['capital_contribution', 'additional_capital'].includes(e.type) && e.currency === c && !e.voided && e.date <= to).reduce((a, e) => a + Number(e.amount), 0));
-    // رأس مال كل شريك = ثمن البقر + المعدات التي دفعها حتى نهاية الفترة (يُحسب تلقائياً من حسابه)
-    const inv = Object.fromEntries(partners.map((p) => [p.id, partnerInvestment(p.id, { ledger: led, expenses: exps, animals }, { currency: c, to })]));
+    // رأس مال كل شريك = ثمن البقر + المعدات التي دفعها، مرجَّحاً بأيام وجوده في الفترة
+    const inv = Object.fromEntries(partners.map((p) => [p.id, capitalOf(p.id, { ledger: led, expenses: exps, animals }, { currency: c, from, to })]));
     let alloc = null, allocErr = ''; try { if (partners.length) alloc = allocateProfitByThirds(pl.netProfit, partners, Object.fromEntries(Object.entries(inv).map(([k, v]) => [k, v.total])), { capitalClosed: isCapitalClosed(s.capitalClosedFrom, from) }); } catch (e) { allocErr = e.message; }
-    return { pl, recv, custCredit, payable, loanBal, shares, prevDist, capital, alloc, allocErr, inv };
-  }, [ags, dls, exps, epays, pays, custs, cash, events, animals, loans, reps, led, partners, from, to, c, asExpense, s.capitalClosedFrom]);
+    return { pl, recv, custCredit, payable, loanBal, shares, prevDist, capital, alloc, allocErr, inv, unconsumed, capUnit: Object.values(inv)[0]?.unit || c };
+  }, [ags, dls, exps, epays, pays, custs, cash, events, animals, loans, reps, led, partners, from, to, c, asExpense, s.capitalClosedFrom, s.stockCostingMode, stockMv]);
   const allPartners = useCol('partners').rows; const name = (id) => allPartners.find((p) => p.id === id)?.name || '—';
   const distributedFor = (stId, pid) => round2(led.filter((e) => e.type === 'profit_distribution' && e.settlementId === stId && e.partnerId === pid && !e.voided).reduce((a, e) => a + Number(e.amount), 0));
   const finalize = async () => { setErr(''); try { if (!confirm('تأكيد اعتماد التسوية؟ سيتم قيد تخصيص الأرباح في دفاتر الشركاء (بدون أي حركة نقدية).')) return; await finalizeSettlement(user, { from, to, currency: c, ...calc.pl, receivables: calc.recv, payables: calc.payable, loanBalances: calc.loanBal, capital: calc.capital, previousDistributions: calc.prevDist, allocBreakdown: calc.alloc.breakdown }, partners, hist, calc.alloc.allocations.map((a) => ({ partnerId: a.partnerId, amount: a.amount, group: a.group, capital: a.capital, ratioPct: a.ratioPct, fromOwnThird: a.fromOwnThird, fromFarmThird: a.fromFarmThird }))); } catch (e) { setErr(e.message); } };
   const lines = [
     ['إيراد الحليب (التسليمات)', calc.pl.milkRevenue], ['إيرادات أخرى', calc.pl.otherIncome], ['ربح/خسارة بيع المواشي (سعر البيع − سعر الشراء)', calc.pl.animalSales], ['إجمالي الإيراد', calc.pl.revenue, 'b'],
     ['مصروفات التشغيل (كلها — بدون شراء الحيوانات)', calc.pl.operatingExpenses], ['إجمالي المصروفات', calc.pl.totalExpenses, 'b'],
+    ...(calc.pl.stockConsumption ? [['يضاف إلى المصروفات: علف/مخزون مستهلك بالمتوسط المرجّح (بدل شرائه)', calc.pl.stockConsumption, 'i']] : []),
     ...(calc.pl.exchangeResult ? [['نتيجة تبادل الحيوانات على المزرعة (ربح +/ خسارة −)', calc.pl.exchangeResult]] : []),
+    ...(calc.pl.deathLoss ? [['خسارة نفوق الحيوانات (سعر شرائها)', calc.pl.deathLoss]] : []),
     ['صافي الربح / الخسارة', calc.pl.netProfit, 'net'],
     ['ذمم العملاء — عليهم لنا (صافي بعد خصم دفعاتهم المقدمة)', calc.recv, 'i'], ['أرصدة دائنة للعملاء — لهم علينا', calc.custCredit, 'i'], ['ذمم الموردين — مصروفات غير مسددة', calc.payable, 'i'], ['أرصدة قروض الشركاء (أصل)', calc.loanBal, 'i'], ['توزيعات نقدية سابقة', calc.prevDist, 'i']];
   const stDists = see ? led.filter((e) => e.type === 'profit_distribution' && e.settlementId === see.id && !e.voided).sort((a, b) => a.date.localeCompare(b.date)) : [];
@@ -236,6 +242,7 @@ export function Settlements() {
         {clash && <div className="mb-3 rounded-lg bg-red-50 p-3 text-sm font-bold text-red-700">هذه الفترة تتداخل مع تسوية معتمدة ({clash.from} ← {clash.to}). اعتمادها سيكرّر توزيع الأرباح على نفس الأيام، لذلك الاعتماد معطّل.</div>}
         <Table rows={lines.map(([l, v, k], i) => ({ id: i, l, v, k }))} columns={[{ key: 'l', label: 'البند', render: (r) => <span className={r.k === 'b' || r.k === 'net' ? 'font-extrabold' : r.k === 'i' ? 'text-slate-500' : ''}>{r.l}</span> }, { key: 'v', label: `المبلغ (${c})`, render: (r) => <b className={`num ${r.k === 'net' ? (r.v >= 0 ? 'text-emerald-700' : 'text-rose-600') : ''}`}>{fmt(r.v)}</b> }]} />
         <div className="mt-2 text-xs text-slate-500">صافي الربح = كل المبيعات (حليب + حيوانات + أخرى) − كل المصروفات التشغيلية. شراء الحيوانات لا يدخل في الأرباح.</div>
+        {calc.unconsumed > 0 && <div className="mt-3 rounded-lg bg-sky-50 p-3 text-sm text-sky-900">مخزون مشترى لم يُستهلك بعد: <b className="num">{fmt(calc.unconsumed)} {c}</b> — لا يدخل الأرباح حتى تسجّل استهلاكه (صادر) من «الأعلاف والمخزون». إن لم تسجّل الاستهلاك بانتظام ستبدو الأرباح أعلى من الحقيقة.</div>}
         {calc.allocErr && <div className="mt-3 rounded-lg bg-amber-50 p-3 text-sm font-bold text-amber-800">{calc.allocErr} — حدّد «مجموعة الأرباح» للشريك من صفحة الشركاء.</div>}
         {s.capitalClosedFrom && from < s.capitalClosedFrom && to >= s.capitalClosedFrom && <div className="mt-3 rounded-lg bg-amber-50 p-3 text-sm font-bold text-amber-800">هذه الفترة تمتد عبر تاريخ إغلاق رأس المال ({s.capitalClosedFrom}): تُحسب بالأثلاث لأنها تبدأ قبله. الأفضل أن تقسمها إلى تسويتين: حتى {s.capitalClosedFrom} بالأثلاث، وما بعده بالنصفين.</div>}
         {calc.pl.netProfit < 0 && <div className="mt-3 rounded-lg bg-amber-50 p-3 text-sm font-bold text-amber-800">الفترة خاسرة: التخصيص سيُسجَّل بالسالب على حصص الشركاء (خصم من أرصدتهم) ولا يمكن توزيعه نقدياً.</div>}
@@ -248,13 +255,13 @@ export function Settlements() {
           <Table rows={calc.alloc.allocations.map((a) => ({ id: a.partnerId, ...a }))} columns={[
             { key: 'n', label: 'الشريك', render: (r) => name(r.partnerId) },
             { key: 'g', label: 'المجموعة', render: (r) => (r.group === 'owners' ? 'ملكية' : 'ربح فقط') },
-            { key: 'cap', label: 'رأس ماله (بقر + معدات)', render: (r) => (r.group === 'owners' ? <span className="num">{fmt(r.capital)}</span> : '—') },
+            { key: 'cap', label: 'رأس ماله (متوسط مرجّح بالأيام)', render: (r) => (r.group === 'owners' ? <span className="num">{fmt(r.capital)}</span> : '—') },
             { key: 'pct', label: 'نسبته في الثلث', render: (r) => `${r.ratioPct}%` },
             ...(calc.alloc.breakdown.mode === 'halves' ? [] : [{ key: 'f', label: '① من ثلث رأس المال', render: (r) => (r.group === 'owners' ? <span className="num">{fmt(r.fromFarmThird)}</span> : '—') }]),
             { key: 'o', label: '② / ③ من ثلثه', render: (r) => <span className="num">{fmt(r.fromOwnThird)}</span> },
             { key: 'amount', label: 'الحصة', render: (r) => <b className="num">{fmt(r.amount)}</b> }]} />
           {calc.alloc.breakdown.ownersBasis !== 'capital' && <div className="mt-2 rounded-lg bg-amber-50 p-2 text-xs font-bold text-amber-800">لا يوجد رأس مال مسجَّل لشركاء الملكية حتى {to} فالقسمة {calc.alloc.breakdown.ownersBasis === 'ownership' ? 'بحسب نسبة الملكية المسجَّلة' : 'بالتساوي'}. سجّل شراء البقر/المعدات على حساب الشريك لتُحسب النسبة تلقائياً.</div>}
-          <div className="mt-2 text-xs text-slate-500">نسبة كل شريك ملكية = رأس ماله ÷ مجموع رأس مال الملاك (حتى نهاية الفترة). رأس المال = ثمن البقر + المعدات التي دفعها من ماله.</div></>}
+          <div className="mt-2 text-xs text-slate-500">نسبة كل شريك ملكية = رأس ماله ÷ مجموع رأس مال الملاك (حتى نهاية الفترة). رأس المال = ثمن البقر + المعدات التي دفعها من ماله، محسوباً بمتوسط الأيام التي كان فيها داخل الفترة.</div></>}
         {err && <div className="mt-2 text-sm font-bold text-red-600">{err}</div>}
         <div className="mt-4">{can('finalizeSettlement') ? <button className="btn btn-primary w-full sm:w-auto" disabled={!calc.alloc || !!clash || from > to} onClick={finalize}>اعتماد التسوية (مدير النظام)</button> : <span className="text-sm text-slate-500">اعتماد التسوية متاح لمدير النظام فقط.</span>}</div>
       </Card>

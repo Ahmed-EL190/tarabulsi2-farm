@@ -280,7 +280,7 @@ export function cashFlowSummary(txs, { from, to, currency } = {}) {
 
 // ───────────── Profit & settlement ─────────────
 /** Accrual P&L: milk revenue = DELIVERED value (not cash). Animal purchases follow the workbook (expense) unless configured. */
-export function profitAndLoss({ deliveries = [], agreements = [], expenses = [], otherIncome = [], animalSales = [], animalPurchases = [], exchangeResults = [], from, to, currency = 'SYP', animalPurchaseAsExpense = true }) {
+export function profitAndLoss({ deliveries = [], agreements = [], expenses = [], otherIncome = [], animalSales = [], animalPurchases = [], exchangeResults = [], deathLosses = [], stockConsumption = [], from, to, currency = 'SYP', animalPurchaseAsExpense = true }) {
   const price = (d) => n(d.pricePerLiter ?? agreements.find((a) => a.id === d.agreementId)?.pricePerLiter);
   const agCur = (d) => agreements.find((a) => a.id === d.agreementId)?.currency || 'SYP';
   const sum = (rows) => round2(rows.reduce((s, x) => s + n(x.amount), 0));
@@ -290,10 +290,14 @@ export function profitAndLoss({ deliveries = [], agreements = [], expenses = [],
   const opex = sum(operatingExpenses(expenses, { from, to, currency }));
   const purchases = animalPurchaseAsExpense ? sum(animalPurchases.filter((x) => inRange(x.date, from, to) && x.currency === currency)) : 0;
   const revenue = round2(milkRevenue + other + animals);
-  const totalExpenses = round2(opex + purchases);
+  // تكلفة العلف/المخزون المستهلك في الفترة (بالمتوسط المرجّح) بدل شرائه — انظر stockCosting
+  const consumptionCost = round2(stockConsumption.filter((x) => inRange(x.date, from, to) && (x.currency || 'SYP') === currency).reduce((t, x) => t + n(x.amount), 0));
+  const totalExpenses = round2(opex + purchases + consumptionCost);
+  // خسارة نفوق الحيوانات (سعر شرائها) تدخل الأرباح فتتقاسمها الأثلاث
+  const deathLoss = round2(deathLosses.filter((x) => inRange(x.date, from, to) && (x.currency || 'SYP') === currency).reduce((t, x) => t + n(x.amount), 0));
   // نتيجة تبادل الحيوانات التي اختير أن تكون على المزرعة (ربح موجب / خسارة سالبة)
   const exchangeResult = round2(exchangeResults.filter((x) => inRange(x.date, from, to) && (x.currency || 'SYP') === currency).reduce((t, x) => t + n(x.amount), 0));
-  return { milkRevenue, otherIncome: other, animalSales: animals, revenue, operatingExpenses: opex, animalPurchases: purchases, totalExpenses, exchangeResult, netProfit: round2(revenue - totalExpenses + exchangeResult) };
+  return { milkRevenue, otherIncome: other, animalSales: animals, revenue, operatingExpenses: opex, animalPurchases: purchases, totalExpenses, stockConsumption: consumptionCost, exchangeResult, deathLoss, netProfit: round2(revenue - totalExpenses + exchangeResult + deathLoss) };
 }
 export function validateShares(partners, key = 'profitSharePct') {
   const total = round2(partners.reduce((s, p) => s + n(p[key]), 0));
@@ -351,6 +355,51 @@ function weightsOf(list, primary, fallback) {
  *  ثلث لشركاء الملكية (أبو وليد وعمار) · ثلث المزرعة يأخذه شركاء الملكية أيضاً.
  *  الثلثان الأخيران يُقسَّمان بين الملاك بنسبة رأس مال كل واحد (`capitalById`: بقر + معدات).
  *  تخصيص فقط — لا يُنشئ أي حركة نقدية. المجموع يساوي صافي الربح تماماً (الربح السالب يُوزَّع بنفس النسب). */
+// ───────────── رأس المال: مرجَّح بالأيام ─────────────
+const dayN = (d) => Math.floor(Date.parse(`${String(d).slice(0, 10)}T00:00:00Z`) / 86400000);
+/** قيود رأس مال الشريك: ثمن بقر دفعه + معدات دفعها، كل قيد بتاريخه وعملته. */
+export function capitalEntries(partnerId, { ledger = [], expenses = [], animals = [] } = {}) {
+  const gone = new Set(animals.filter((a) => a.voided).map((a) => a.id));
+  const equip = new Set(expenses.filter((e) => !e.voided && e.category === 'equipment').map((e) => e.id));
+  const out = [];
+  for (const e of ledger) {
+    if (e.partnerId !== partnerId || e.voided) continue;
+    if (e.type === 'animal_purchase_paid' && !(e.animalId && gone.has(e.animalId))) out.push({ date: e.date, amount: n(e.amount), currency: e.currency || 'SYP', kind: 'cows' });
+    else if (e.type === 'expense_paid_personally' && e.expenseId && equip.has(e.expenseId)) out.push({ date: e.date, amount: n(e.amount), currency: e.currency || 'SYP', kind: 'equipment' });
+  }
+  return out;
+}
+/** رأس مال الشريك لحساب نسب الأرباح (بالليرة السورية): ثمن بقر + معدات دفعها.
+ *  from+to: يُرجَّح كل قيد بعدد أيام وجوده من الفترة (دخل آخر الفترة = وزن صغير). بدونهما: التراكمي حتى `to`. */
+export function capitalOf(partnerId, data = {}, { currency = 'SYP', from, to } = {}) {
+  let cows = 0, equipment = 0;
+  for (const e of capitalEntries(partnerId, data)) {
+    if (to && e.date > to) continue;
+    if (e.currency !== currency) continue;
+    let w = 1;
+    if (from && to) { const total = dayN(to) - dayN(from) + 1; const active = dayN(to) - Math.max(dayN(e.date), dayN(from)) + 1; w = total > 0 ? Math.max(0, Math.min(1, active / total)) : 1; }
+    if (e.kind === 'cows') cows += e.amount * w; else equipment += e.amount * w;
+  }
+  return { cows: round2(cows), equipment: round2(equipment), total: round2(cows + equipment), unit: currency, weighted: !!(from && to) };
+}
+
+// ───────────── المخزون: تكلفة العلف عند الاستهلاك (متوسط مرجّح) ─────────────
+/** مشتريات مرتبطة بصنف مخزون لا تدخل الأرباح عند الشراء؛ يدخلها الاستهلاك فقط (كمية الصادر × متوسط التكلفة).
+ *  → { linked: Set(معرّفات المصروفات المرتبطة), consumption: [{date,currency,amount,itemId}], valuation: {itemId:{qty,cost:{cur:amount}}} } */
+export function stockCosting(expenses = [], movements = []) {
+  const expById = Object.fromEntries(expenses.filter((e) => !e.voided).map((e) => [e.id, e]));
+  const mvs = movements.filter((m) => !m.voided).slice().sort((a, b) => String(a.date).localeCompare(String(b.date)) || (a.type === 'in' ? -1 : 1) - (b.type === 'in' ? -1 : 1));
+  const linked = new Set(), consumption = [], st = {};
+  for (const m of mvs) {
+    const s = (st[m.itemId] = st[m.itemId] || { qty: 0, cost: {} }); const q = n(m.qty);
+    if (m.type === 'in') { s.qty = round2(s.qty + q); const e = m.expenseId ? expById[m.expenseId] : null; if (e) { linked.add(e.id); const c = e.currency || 'SYP'; s.cost[c] = (s.cost[c] || 0) + n(e.amount); } }
+    else { const take = Math.min(q, s.qty); if (!(take > 0)) continue; const ratio = take / s.qty;
+      for (const [c, amt] of Object.entries(s.cost)) { const used = round2(amt * ratio); s.cost[c] = round2(amt - used); if (used) consumption.push({ date: m.date, currency: c, amount: used, itemId: m.itemId }); }
+      s.qty = round2(s.qty - take); }
+  }
+  return { linked, consumption, valuation: st };
+}
+
 /** رأس المال مُغلق في هذا التاريخ؟ (closedFrom = تاريخ الإغلاق من الإعدادات؛ فارغ = ما زال مفتوحاً) */
 export const isCapitalClosed = (closedFrom, date) => !!closedFrom && !!date && String(date) >= String(closedFrom);
 /** حالة رأس المال: المستثمَر (بقر + معدات للملاك) وما بقي مستحقاً لهم من ثمن البقر والتبادل. */
@@ -411,7 +460,9 @@ export function animalPLInputs(events = [], animals = []) {
   }
   // نتيجة التبادل: تدخل الأرباح فقط لو اختير أن تكون على المزرعة (على الشركاء تُقيَّد في حساباتهم)
   const exchangeResults = events.filter((e) => !e.voided && !byId[e.animalId]?.voided && e.type === 'exchange_out' && (e.resultBearer || 'farm') === 'farm' && n(e.result) !== 0).map((e) => ({ date: e.date, currency: e.currency || 'SYP', amount: n(e.result) }));
-  return { animalSales, animalPurchases: [], exchangeResults };
+  // نفوق حيوان له سعر شراء = خسارة بسعره (المولود بالمزرعة بلا سعر شراء لا خسارة)
+  const deathLosses = events.filter((e) => !e.voided && e.type === 'death' && byId[e.animalId] && !byId[e.animalId].voided && n(byId[e.animalId].acquisitionCost) > 0).map((e) => ({ date: e.date, currency: byId[e.animalId].currency || e.currency || 'SYP', amount: -n(byId[e.animalId].acquisitionCost) }));
+  return { animalSales, animalPurchases: [], exchangeResults, deathLosses };
 }
 
 // ───────────── Animals ─────────────
@@ -541,7 +592,8 @@ export function splitAmongOwners(amount, partners, data = {}, { currency = 'SYP'
 /** نتيجة الحيوان (ربح/خسارة): بيع = سعر البيع − سعر الشراء، تبادل = القيمة المتفق عليها − سعر الشراء. null لو لا بيع/تبادل أو سعر الشراء غير معروف. */
 export function animalResultInfo(animal, events = []) {
   const cost = n(animal.acquisitionCost); if (!(cost > 0)) return null;
-  const ev = events.find((e) => !e.voided && e.animalId === animal.id && (e.type === 'sale' || e.type === 'exchange_out')); if (!ev) return null;
+  const ev = events.find((e) => !e.voided && e.animalId === animal.id && (e.type === 'sale' || e.type === 'exchange_out' || e.type === 'death')); if (!ev) return null;
+  if (ev.type === 'death') return { kind: 'death', result: -cost, value: 0, cost, bearer: 'farm', partnerIds: [], currency: animal.currency || ev.currency || 'SYP' };
   const result = ev.result !== undefined && ev.result !== null && ev.result !== '' ? n(ev.result) : round2(n(ev.value) - cost);
   return { kind: ev.type === 'sale' ? 'sale' : 'exchange', result, value: n(ev.value), cost, bearer: ev.resultBearer || null, partnerIds: ev.resultPartnerIds || [], currency: ev.currency || animal.currency || 'SYP' };
 }

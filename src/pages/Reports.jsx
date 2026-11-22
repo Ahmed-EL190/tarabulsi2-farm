@@ -12,7 +12,7 @@ const weekKey = (d) => { const x = new Date(d); const day = (x.getDay() + 6) % 7
 const gkey = (g, d) => (g === 'day' ? d : g === 'week' ? weekKey(d) : g === 'month' ? d.slice(0, 7) : d.slice(0, 4));
 
 function useData() {
-  const names = ['milkProduction', 'milkSales', 'milkDeliveries', 'customerPayments', 'customers', 'expenses', 'expensePayments', 'cashTransactions', 'cashAccounts', 'partners', 'partnerCapitalTransactions', 'partnerLoans', 'partnerLoanRepayments', 'settlements', 'animals', 'animalEvents'];
+  const names = ['milkProduction', 'milkSales', 'milkDeliveries', 'customerPayments', 'customers', 'expenses', 'expensePayments', 'cashTransactions', 'cashAccounts', 'partners', 'partnerCapitalTransactions', 'partnerLoans', 'partnerLoanRepayments', 'settlements', 'animals', 'animalEvents', 'stockMovements'];
   const d = {}; for (const n of names) d[n] = useCol(n).rows.filter((r) => !r.voided); return d;
 }
 
@@ -36,7 +36,8 @@ export default function Reports() {
     const exps = F.operatingExpenses(d.expenses, { from, to, currency: c }).filter((e) => !cat || e.category === cat);
     const cashTx = d.cashTransactions.filter((t) => inR(t.date) && t.currency === c);
     const ap = F.animalPLInputs(d.animalEvents, d.animals, s.animalPurchaseAsExpense !== false);
-    const pl = F.profitAndLoss({ agreements: d.milkSales, deliveries: d.milkDeliveries, expenses: d.expenses, otherIncome: d.cashTransactions.filter((t) => t.type === 'other_income'), animalSales: ap.animalSales, animalPurchases: ap.animalPurchases, exchangeResults: ap.exchangeResults, from, to, currency: c, animalPurchaseAsExpense: s.animalPurchaseAsExpense !== false });
+    const costing = s.stockCostingMode === 'purchase' ? null : F.stockCosting(d.expenses, d.stockMovements); // تكلفة العلف عند الاستهلاك
+    const pl = F.profitAndLoss({ agreements: d.milkSales, deliveries: d.milkDeliveries, expenses: costing ? d.expenses.filter((e) => !costing.linked.has(e.id)) : d.expenses, deathLosses: ap.deathLosses, stockConsumption: costing?.consumption || [], otherIncome: d.cashTransactions.filter((t) => t.type === 'other_income'), animalSales: ap.animalSales, animalPurchases: ap.animalPurchases, exchangeResults: ap.exchangeResults, from, to, currency: c, animalPurchaseAsExpense: s.animalPurchaseAsExpense !== false });
     const custPos = d.customers.filter((x) => !customer || x.id === customer).map((x) => ({ id: x.id, name: x.name, ...F.customerPosition(x.id, { agreements: d.milkSales.filter((a) => (a.currency || 'SYP') === c), deliveries: d.milkDeliveries, payments: d.customerPayments.filter((p) => (p.currency || 'SYP') === c) }) }));
     const parts = d.partners.filter((p) => !partner || p.id === partner);
     const L = (p, o = {}) => F.partnerLedger(p.id, d.partnerCapitalTransactions, { currency: c, from, to, ...o });
@@ -81,10 +82,10 @@ export default function Reports() {
       sumKeys: ['cost', 'milk', 'treat', 'sp', 'res'], summary: [{ label: 'القطيع النشط الحالي', value: F.activeHerdCount(d.animalEvents) }] };
     R.animalMoves = { title: 'حركة المواشي', columns: [{ key: 'date', label: 'التاريخ', type: D }, { key: 'tag', label: 'الحيوان' }, { key: 'type', label: 'الحدث' }, { key: 'value', label: 'القيمة', type: M }], rows: d.animalEvents.filter((e) => inR(e.date)).sort((a, b) => a.date.localeCompare(b.date)), summary: [{ label: 'القطيع النشط الحالي', value: F.activeHerdCount(d.animalEvents) }] };
     R.payables = { title: 'الذمم الدائنة (مصروفات غير مسددة)', columns: [{ key: 'date', label: 'التاريخ', type: D }, { key: 'description', label: 'المصروف' }, { key: 'supplierName', label: 'المورّد' }, { key: 'outstanding', label: 'المتبقي', type: M }], rows: d.expenses.filter((e) => e.currency === c && e.date <= to).map((e) => ({ ...e, outstanding: F.expensePosition(e, d.expensePayments).outstanding })).filter((e) => e.outstanding > 0), sumKeys: ['outstanding'] };
-    R.pl = { title: 'الأرباح والخسائر', columns: [{ key: 'item', label: 'البند' }, { key: 'amount', label: 'المبلغ', type: M }], rows: [{ item: 'إيراد الحليب (التسليمات)', amount: pl.milkRevenue }, { item: 'إيرادات أخرى', amount: pl.otherIncome }, { item: 'ربح/خسارة بيع الحيوانات (سعر البيع − سعر الشراء)', amount: pl.animalSales }, { item: 'مصروفات التشغيل', amount: -pl.operatingExpenses }, { item: 'مشتريات الحيوانات (حسب الإعداد)', amount: -pl.animalPurchases }, { item: 'نتيجة تبادل الحيوانات على المزرعة (ربح/خسارة)', amount: pl.exchangeResult }], totals: { amount: pl.netProfit }, summary: [{ label: 'صافي الربح / الخسارة', value: pl.netProfit }] };
+    R.pl = { title: 'الأرباح والخسائر', columns: [{ key: 'item', label: 'البند' }, { key: 'amount', label: 'المبلغ', type: M }], rows: [{ item: 'إيراد الحليب (التسليمات)', amount: pl.milkRevenue }, { item: 'إيرادات أخرى', amount: pl.otherIncome }, { item: 'ربح/خسارة بيع الحيوانات (سعر البيع − سعر الشراء)', amount: pl.animalSales }, { item: 'مصروفات التشغيل', amount: -pl.operatingExpenses }, { item: 'مشتريات الحيوانات (حسب الإعداد)', amount: -pl.animalPurchases }, { item: 'نتيجة تبادل الحيوانات على المزرعة (ربح/خسارة)', amount: pl.exchangeResult }, { item: 'خسارة نفوق الحيوانات (سعر شرائها)', amount: pl.deathLoss }, { item: 'تكلفة علف/مخزون مستهلك (بدل شرائه)', amount: -pl.stockConsumption }], totals: { amount: pl.netProfit }, summary: [{ label: 'صافي الربح / الخسارة', value: pl.netProfit }] };
     return R;
 
-  }, [d, from, to, c, g, partner, customer, cat, saleType, s.animalPurchaseAsExpense]);
+  }, [d, from, to, c, g, partner, customer, cat, saleType, s.animalPurchaseAsExpense, s.stockCostingMode]);
 
   const def = catalog[kind];
   const rows = def.rows;
