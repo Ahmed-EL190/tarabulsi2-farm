@@ -110,3 +110,47 @@ describe('فروق التبادل لا تُحسب خطأً كعدم تطابق (
     expect(find(r, 'orphanPayable').fix.ops).toEqual([{ col: 'partnerCapitalTransactions', id: 'LX', void: true }]);
   });
 });
+
+describe('فحوص الأنواع الجديدة', () => {
+  const ids = (r) => r.checks.filter((c) => c.items.length).map((c) => c.id);
+  it('مصروف مرتبط بالمخزون بلا حركة وارد، ووارد أصله مصروف ملغى', () => {
+    const exp = { id: 'E1', date: '2026-05-01', description: 'علف', amount: 100, currency: 'SYP', category: 'feed', stockItemId: 'I', stockQty: 50, stockItemName: 'علف مركز' };
+    expect(ids(auditData({ expenses: [exp], stock: [] }))).toContain('stockLinkMissing');
+    expect(ids(auditData({ expenses: [exp], stock: [{ id: 'M', itemId: 'I', type: 'in', qty: 50, expenseId: 'E1', date: '2026-05-01' }] }))).not.toContain('stockLinkMissing');
+    expect(ids(auditData({ expenses: [{ ...exp, voided: true }], stock: [{ id: 'M', itemId: 'I', type: 'in', qty: 50, expenseId: 'E1', date: '2026-05-01' }] }))).toContain('stockOrphanIn');
+  });
+  it('صنف مخزون بالسالب', () => {
+    expect(ids(auditData({ stock: [{ id: 'a', itemId: 'I', type: 'in', qty: 5 }, { id: 'b', itemId: 'I', type: 'out', qty: 9 }] }))).toContain('stockNegative');
+  });
+  it('معدات لم تُدفع من حساب شريك', () => {
+    const e = { id: 'Q', date: '2026-01-01', description: 'حلابة', amount: 10, currency: 'SYP', category: 'equipment' };
+    expect(ids(auditData({ expenses: [e] }))).toContain('equipmentNoPartner');
+    expect(ids(auditData({ expenses: [e], ledger: [{ id: 'L', type: 'expense_paid_personally', expenseId: 'Q', partnerId: 'p', amount: 10 }], partners: [{ id: 'p', name: 'و', ownershipPct: 50 }] }))).not.toContain('equipmentNoPartner');
+  });
+  it('تسوية خصّصت ربحاً لحساب المزرعة، أو قُسمت بطريقة تخالف تاريخ الإغلاق', () => {
+    const partners = [{ id: 'f', name: 'المزرعة', ownershipPct: 0 }, { id: 'w', name: 'و', ownershipPct: 50 }];
+    const s = { id: 'S', from: '2026-01-01', to: '2026-01-31', netProfit: 100, allocations: [{ partnerId: 'f', amount: 50 }, { partnerId: 'w', amount: 50 }], allocBreakdown: { mode: 'thirds' } };
+    expect(ids(auditData({ partners, settlements: [s] }))).toContain('settlementFarmAlloc');
+    expect(ids(auditData({ partners, settlements: [{ ...s, allocations: [{ partnerId: 'w', amount: 100 }] }], settings: { capitalClosedFrom: '2026-01-01' } }))).toContain('settlementCapitalMode');
+    expect(ids(auditData({ partners, settlements: [{ ...s, allocations: [{ partnerId: 'w', amount: 100 }], allocBreakdown: { mode: 'halves' } }], settings: { capitalClosedFrom: '2026-01-01' } }))).not.toContain('settlementCapitalMode');
+  });
+  it('فرق تبادل مستلَم: يتطابق مع قيد سداد لدافع الحيوان الخارج', () => {
+    const ev = [{ id: '1', type: 'exchange_out', animalId: 'a', tag: 'a', value: 1500, exchangeId: 'X', date: 'd', currency: 'SYP' }, { id: '2', type: 'exchange_in', animalId: 'N', tag: 'N', value: 1000, exchangeId: 'X', date: 'd', currency: 'SYP' }];
+    const animals = [{ id: 'a', tag: 'a' }, { id: 'N', tag: 'N' }];
+    const ok = auditData({ events: ev, animals, partners: [{ id: 'w', name: 'و', ownershipPct: 50 }], ledger: [{ id: 'L', type: 'animal_purchase_repaid', exchangeId: 'X', partnerId: 'w', amount: 500, currency: 'SYP', date: 'd' }] });
+    expect(ok.reconciliation.find((r) => r.label.includes('فروق تبادل استلمناها')).ok).toBe(true);
+    const bad = auditData({ events: ev, animals, partners: [{ id: 'w', name: 'و', ownershipPct: 50 }], ledger: [] });
+    expect(bad.reconciliation.find((r) => r.label.includes('فروق تبادل استلمناها')).ok).toBe(false);
+  });
+});
+
+describe('ربط علف التسمين بالمخزون', () => {
+  const ids = (r) => r.checks.filter((c) => c.items.length).map((c) => c.id);
+  const lg = { id: 'L', calfId: 'c', tag: 'C1', date: '2026-05-01', type: 'feed', qty: 5, unit: 'كغ', stockItemId: 'I', stockItemName: 'علف' };
+  const animals = [{ id: 'c', tag: 'C1' }];
+  it('سجل علف بلا خصم من المخزون، وصادر أصله سجل ملغى', () => {
+    expect(ids(auditData({ calfLogs: [lg], animals, stock: [] }))).toContain('calfFeedNoStock');
+    expect(ids(auditData({ calfLogs: [lg], animals, stock: [{ id: 'M', itemId: 'I', type: 'out', qty: 5, calfLogId: 'L' }] }))).not.toContain('calfFeedNoStock');
+    expect(ids(auditData({ calfLogs: [{ ...lg, voided: true }], animals, stock: [{ id: 'M', itemId: 'I', type: 'out', qty: 5, calfLogId: 'L' }] }))).toContain('stockOutOrphan');
+  });
+});

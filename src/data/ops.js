@@ -299,6 +299,24 @@ export async function voidAnimalEventCascade(user, ev, { cash = [], ledger = [] 
   if (ev.exchangeId) { cash.filter((t) => !t.voided && t.exchangeId === ev.exchangeId).forEach((t) => v('cashTransactions', t.id)); ledger.filter((e) => !e.voided && e.exchangeId === ev.exchangeId).forEach((e) => v('partnerCapitalTransactions', e.id)); }
   return commit(user, ops, 'void');
 }
+/** حفظ سجل تسمين عجل. علف مرتبط بصنف مخزون ← حركة «صادر» تلقائية بنفس الكمية (فتنقص الكمية وتدخل تكلفتها الأرباح)؛ تعديله يعدّل الحركة، وفكّ الصنف يلغيها. */
+export async function saveCalfLog(user, data, { existing = null, stock = [], itemName = '' } = {}) {
+  const linked = data.type === 'feed' && !!data.stockItemId; const qty = Number(data.qty);
+  if (linked && !(qty > 0)) throw new Error('أدخل كمية العلف');
+  const id = existing?.id || newId('calfLogs');
+  const doc = { ...data, stockItemId: linked ? data.stockItemId : '', stockItemName: linked ? itemName : '' };
+  const ops = [{ col: 'calfLogs', id, merge: !!existing, data: doc }];
+  const mv = existing ? stock.find((m) => m.calfLogId === existing.id && !m.voided) : null;
+  if (linked) { const md = { itemId: data.stockItemId, itemName, date: data.date, type: 'out', qty, calfLogId: id, notes: `تسمين ${data.tag || ''}` }; ops.push(mv ? { col: 'stockMovements', id: mv.id, merge: true, data: md } : { col: 'stockMovements', data: md }); }
+  else if (mv) ops.push({ col: 'stockMovements', id: mv.id, merge: true, data: voidData('فكّ الربط بسجل التسمين'), action: 'void' });
+  return commit(user, ops, existing ? 'update' : 'create');
+}
+/** إلغاء سجل تسمين مع إلغاء ما خصمه من المخزون (فيرجع للمخزون). */
+export async function voidCalfLog(user, log, { stock = [] } = {}, reason) {
+  const ops = [{ col: 'calfLogs', id: log.id, merge: true, data: voidData(reason), action: 'void' }];
+  stock.filter((m) => m.calfLogId === log.id && !m.voided).forEach((m) => ops.push({ col: 'stockMovements', id: m.id, merge: true, data: voidData(reason), action: 'void' }));
+  return commit(user, ops, 'void');
+}
 /** إلغاء عملية تبادل كاملة: كل أحداثها (الخارج والوارد) + الفرق النقدي + قيود الشركاء (دفع الفرق/استلامه/الخسارة) في خطوة واحدة. */
 export async function voidExchange(user, evs = [], { cash = [], ledger = [] } = {}, reason) {
   const ops = []; const seen = new Set();

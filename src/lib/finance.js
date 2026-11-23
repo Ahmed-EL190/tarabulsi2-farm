@@ -554,11 +554,12 @@ export function calfFattening(calfId, logs = [], { from, to } = {}) {
   const sumOf = (rows) => round2(rows.reduce((t, l) => t + n(l.qty), 0));
   const feedRows = inR.filter((l) => l.type === 'feed'), milkRows = inR.filter((l) => l.type === 'milk');
   const group = (rows, key) => { const o = {}; for (const l of rows) { const k = key(l); o[k] = round2((o[k] || 0) + n(l.qty)); } return o; };
-  const feed = sumOf(feedRows), milk = sumOf(milkRows);
+  const isKg = (l) => !l.unit || /^(كغ|كجم|كيلو|كيلوغرام|kg)$/i.test(String(l.unit).trim()); // علف بوحدة غير الكيلو (كيس…) لا يُجمع معه
+  const feed = sumOf(feedRows.filter(isKg)), milk = sumOf(milkRows);
   return {
     startWeight: startW ? n(startW.qty) : null, startDate: startW?.date || null, endWeight: endW ? n(endW.qty) : null, endDate: endW?.date || null,
     gain, days, dailyGain: gain !== null && days > 0 ? round2(gain / days) : null,
-    feed, feedByItem: group(feedRows, (l) => l.item || 'علف'), milk,
+    feed, feedByItem: group(feedRows, (l) => `${l.item || l.stockItemName || 'علف'}${isKg(l) ? '' : ` (${l.unit})`}`), milk,
     other: group(inR.filter((l) => l.type === 'other'), (l) => `${l.item || '—'}${l.unit ? ` (${l.unit})` : ''}`),
     feedPerKgGain: gain > 0 ? round2(feed / gain) : null, // كغ علف لكل كغ زيادة وزن
   };

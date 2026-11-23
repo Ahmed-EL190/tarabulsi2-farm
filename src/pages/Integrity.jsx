@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import { CheckCircle2, AlertTriangle, XCircle } from 'lucide-react';
 import { Card, PageHeader, Stat, Table, Badge, fmt } from '../components/ui';
 import { FormModal } from '../components/CrudPage';
-import { useCol, useStoreStatus, saveRecord } from '../data/db';
+import { useCol, useStoreStatus, saveRecord, useSettings } from '../data/db';
 import { useAuth } from '../data/auth';
 import { applyFixOps, linkExpensesToPartners, saveExpenseEdit, updateDelivery, updateCustomerPayment, updateCashMovement, postAnimalSaleCash, setPurchaseSource, voidAnimalEventCascade, updateLedgerEntry, voidLedgerEntry } from '../data/ops';
 import { auditData } from '../lib/integrity';
@@ -70,7 +70,7 @@ function Resolver({ r, D, user, onClose }) {
   return null;
 }
 
-const AREAS = ['الصندوق', 'المصروفات', 'المبيعات والحليب', 'المواشي', 'الشركاء والسلف', 'التسويات', 'عام'];
+const AREAS = ['الصندوق', 'المصروفات', 'المخزون', 'المبيعات والحليب', 'المواشي', 'الشركاء والسلف', 'التسويات', 'عام'];
 
 function CheckCard({ c, user, can, D }) {
   const [open, setOpen] = useState(false); const [msg, setMsg] = useState(''); const [busy, setBusy] = useState(false); const [res, setRes] = useState(null);
@@ -105,6 +105,7 @@ export default function Integrity() {
     cash: useCol('cashTransactions').rows, accounts: useCol('cashAccounts').rows, expenses: useCol('expenses').rows, expensePays: useCol('expensePayments').rows, custPays: useCol('customerPayments').rows,
     agreements: useCol('milkSales').rows, deliveries: useCol('milkDeliveries').rows, partners: useCol('partners').rows, ledger: useCol('partnerCapitalTransactions').rows, loans: useCol('partnerLoans').rows,
     loanReps: useCol('partnerLoanRepayments').rows, settlements: useCol('settlements').rows, animals: useCol('animals').rows, events: useCol('animalEvents').rows, production: useCol('milkProduction').rows,
+    stock: useCol('stockMovements').rows, calfLogs: useCol('calfLogs').rows, settings: useSettings(),
   };
   const deps = Object.values(D);
   const r = useMemo(() => auditData(D), deps);

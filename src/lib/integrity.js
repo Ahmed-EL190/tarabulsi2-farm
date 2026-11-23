@@ -13,6 +13,7 @@ const ADD = new Set(['purchase', 'birth', 'exchange_in', 'transfer_in', 'opening
 export function auditData(D = {}) {
   const cashAll = D.cash || []; const cash = live(cashAll); const accounts = D.accounts || []; const expenses = D.expenses || []; const expensePays = D.expensePays || [];
   const custPays = D.custPays || []; const agreements = D.agreements || []; const deliveries = D.deliveries || []; const partners = D.partners || []; const ledger = D.ledger || [];
+  const stock = D.stock || []; const calfLogs = D.calfLogs || []; const settings = D.settings || {};
   const loans = D.loans || []; const loanReps = D.loanReps || []; const settlements = D.settlements || []; const animals = D.animals || []; const events = D.events || []; const production = D.production || [];
   const EXP = Object.fromEntries(expenses.map((e) => [e.id, e])); const AN = Object.fromEntries(animals.map((a) => [a.id, a])); const AG = Object.fromEntries(agreements.map((a) => [a.id, a]));
   const PAY = Object.fromEntries(expensePays.map((p) => [p.id, p])); const PARTNER = Object.fromEntries(partners.map((p) => [p.id, p]));
@@ -65,6 +66,23 @@ export function auditData(D = {}) {
   const known = new Set(allExpenseCategories().map(([k]) => k));
   add('unknownCategory', 'المصروفات', 'warn', 'مصروفات بفئة غير معروفة', live(expenses).filter((e) => !known.has(e.category)).map((e) => ({ text: `${e.date} — ${e.description}: الفئة «${e.category}»`, resolve: { kind: 'expense-edit', id: e.id } })), { hint: 'قد تكون فئة مخصّصة حُذفت. غيّر فئة المصروف.' });
 
+  const equipBad = live(expenses).filter((e) => e.category === 'equipment' && !ledLive.some((l) => l.expenseId === e.id && l.type === 'expense_paid_personally'));
+  add('equipmentNoPartner', 'المصروفات', 'warn', 'معدات لم تُدفع من حساب شريك (لا تدخل رأس مال أحد)', equipBad.map((e) => ({ text: `${e.date} — ${e.description} (${e.amount} ${e.currency || ''})`, resolve: { kind: 'expense-edit', id: e.id } })), { hint: 'رأس المال = ما دفعه الشريك من ماله. لو دفعتها المزرعة من صندوقها عمداً فتجاهل هذا التنبيه.' });
+
+  // ═══════════ المخزون ═══════════
+  const stockLive = live(stock);
+  const noMove = live(expenses).filter((e) => e.stockItemId && n(e.stockQty) > 0 && !stockLive.some((m) => m.expenseId === e.id && m.type === 'in'));
+  add('stockLinkMissing', 'المخزون', 'warn', 'مصروف مرتبط بصنف مخزون لكن كميته لم تُضَف للمخزون', noMove.map((e) => ({ text: `${e.date} — ${e.description}: ${e.stockQty} (${e.stockItemName || 'صنف'})` })),
+    { hint: 'يحدث لو أُلغيت حركة الوارد وحدها. الإصلاح يعيد إضافة الكمية.', fix: noMove.length ? { label: 'إضافة الكميات الناقصة إلى المخزون', ops: noMove.map((e) => ({ col: 'stockMovements', data: { itemId: e.stockItemId, itemName: e.stockItemName || '', date: e.date, type: 'in', qty: n(e.stockQty), expenseId: e.id, notes: `شراء: ${e.description || ''}` } })) } : null });
+  const orphIn = stockLive.filter((m) => m.expenseId && (!EXP[m.expenseId] || EXP[m.expenseId].voided));
+  add('stockOrphanIn', 'المخزون', 'error', 'وارد مخزون أصله مصروف ملغى أو محذوف', orphIn.map((m) => ({ text: `${m.date} — +${m.qty} ${m.itemName || ''}` })), { fix: orphIn.length ? { label: 'إلغاء هذه الحركات', ops: orphIn.map((m) => V('stockMovements', m.id)) } : null });
+  const noOut = live(calfLogs).filter((l) => l.type === 'feed' && l.stockItemId && !stockLive.some((m) => m.calfLogId === l.id && m.type === 'out'));
+  add('calfFeedNoStock', 'المخزون', 'warn', 'علف عجل مرتبط بصنف مخزون لكن لم يُخصم من المخزون', noOut.map((l) => ({ text: `${l.date} — ${l.qty} ${l.unit || ''} (${l.stockItemName || 'صنف'}) للعجل ${l.tag || ''}` })), { fix: noOut.length ? { label: 'خصم الكميات الناقصة من المخزون', ops: noOut.map((l) => ({ col: 'stockMovements', data: { itemId: l.stockItemId, itemName: l.stockItemName || '', date: l.date, type: 'out', qty: n(l.qty), calfLogId: l.id, notes: `تسمين ${l.tag || ''}` } })) } : null });
+  const CL = Object.fromEntries(calfLogs.map((l) => [l.id, l])); const orphOut = stockLive.filter((m) => m.calfLogId && (!CL[m.calfLogId] || CL[m.calfLogId].voided));
+  add('stockOutOrphan', 'المخزون', 'error', 'صادر مخزون أصله سجل تسمين ملغى', orphOut.map((m) => ({ text: `${m.date} — -${m.qty} ${m.itemName || ''}` })), { fix: orphOut.length ? { label: 'إلغاء هذه الحركات', ops: orphOut.map((m) => V('stockMovements', m.id)) } : null });
+  const lvl = {}; stockLive.forEach((m) => { lvl[m.itemId] = (lvl[m.itemId] || 0) + (m.type === 'in' ? n(m.qty) : -n(m.qty)); });
+  add('stockNegative', 'المخزون', 'warn', 'صنف مخزون كميته بالسالب (صادر أكثر من الوارد)', Object.entries(lvl).filter(([, q]) => q < -0.005).map(([id, q]) => ({ text: `${stockLive.find((m) => m.itemId === id)?.itemName || id}: ${round2(q)}` })), { hint: 'سجّل الوارد الناقص، أو صحّح كمية الصادر. وإلا ستكون تكلفة العلف في الأرباح غير دقيقة.' });
+
   // ═══════════ المبيعات والحليب ═══════════
   const delByAg = {}; live(deliveries).forEach((d) => { delByAg[d.agreementId] = (delByAg[d.agreementId] || 0) + n(d.qty); });
   add('overDelivered', 'المبيعات والحليب', 'error', 'اتفاقيات التسليم فيها أكبر من الكمية المتفق عليها', live(agreements).filter((a) => (delByAg[a.id] || 0) > n(a.agreedQty) + 0.005).flatMap((a) => live(deliveries).filter((d) => d.agreementId === a.id).sort((x, y) => x.date.localeCompare(y.date)).map((d) => ({ text: `${a.number || a.id} (متفق ${a.agreedQty} لتر، مسلَّم ${round2(delByAg[a.id])}) — تسليم ${d.qty} لتر بتاريخ ${d.date}`, resolve: { kind: 'delivery-edit', id: d.id } }))), { hint: 'عدّل الكمية الخاطئة من التسليم المناسب.' });
@@ -96,6 +114,7 @@ export function auditData(D = {}) {
   add('purchaseTwice', 'المواشي', 'error', 'شراء حيوان مسجّل مرتين (على حساب شريك ومن الصندوق)', both.map((x) => ({ text: x.text })), { fix: both.length ? { label: 'إلغاء حركات الصندوق المكرّرة (يبقى على حساب الشريك)', ops: both.flatMap((x) => x.ops) } : null });
   add('purchaseNoSource', 'المواشي', 'warn', 'شراء حيوان بلا مصدر دفع (لا صندوق ولا شريك)', none.map((x) => ({ text: x.text, resolve: x.resolve })), { hint: 'من المواشي: «ربط المشتريات بحساب شريك» أو «تدقيق المشتريات».', link: '/animals' });
   add('purchaseNoLedger', 'المواشي', 'error', 'شراء مسجّل على شريك لكن بلا قيد في حسابه', noLed.map((x) => ({ text: x.text })), { fix: noLed.length ? { label: 'قيد المبالغ في حسابات الشركاء', ops: noLed.map((x) => x.op) } : null });
+  add('calfLogOfVoided', 'المواشي', 'warn', 'سجلات تسمين لعجل ملغى أو محذوف', live(calfLogs).filter((l) => !AN[l.calfId] || AN[l.calfId].voided).map((l) => ({ text: `${l.date} — ${l.type} ${l.qty} (${l.tag || 'عجل'})` })), { fix: live(calfLogs).some((l) => !AN[l.calfId] || AN[l.calfId].voided) ? { label: 'إلغاء هذه السجلات', ops: live(calfLogs).filter((l) => !AN[l.calfId] || AN[l.calfId].voided).map((l) => V('calfLogs', l.id)) } : null });
   const evBad = evLive.filter((e) => !AN[e.animalId] || AN[e.animalId].voided);
   add('eventsOfVoidedAnimal', 'المواشي', 'error', 'أحداث (شراء/بيع/...) لحيوان ملغى أو محذوف', evBad.map((e) => ({ text: `${e.date} — ${e.type} ${e.tag || ''} ${e.value || ''}` })), { fix: evBad.length ? { label: 'إلغاء هذه الأحداث', ops: evBad.map((e) => V('animalEvents', e.id)) } : null });
   const bad = []; const byAnimal = {}; evLive.filter((e) => AN[e.animalId] && !AN[e.animalId].voided).forEach((e) => { (byAnimal[e.animalId] = byAnimal[e.animalId] || []).push(e); });
@@ -143,6 +162,13 @@ export function auditData(D = {}) {
     }
     if ((s.allocations || []).length && !eq((s.allocations || []).reduce((x, a) => x + n(a.amount), 0), s.netProfit)) allocBad.push({ text: `تسوية ${s.from}→${s.to}: مجموع الحصص ≠ صافي الربح`, link: '/settlements' });
   }
+  const farmAlloc = [], modeBad = [];
+  for (const s of st) {
+    for (const a of s.allocations || []) if (PARTNER[a.partnerId] && profitGroupOf(PARTNER[a.partnerId]) === 'farm' && n(a.amount) !== 0) farmAlloc.push({ text: `تسوية ${s.from}→${s.to}: خُصّص ${a.amount} لحساب «${PARTNER[a.partnerId].name}» (هذا حساب ثلث رأس المال لا شريك ربح)`, link: '/settlements' });
+    if (settings.capitalClosedFrom && s.allocBreakdown?.mode) { const shouldHalve = s.from >= settings.capitalClosedFrom; if (shouldHalve !== (s.allocBreakdown.mode === 'halves')) modeBad.push({ text: `تسوية ${s.from}→${s.to}: قُسمت ${s.allocBreakdown.mode === 'halves' ? 'نصفين' : 'بالأثلاث'} لكن رأس المال ${shouldHalve ? 'كان مُغلقاً' : 'كان مفتوحاً'} في بدايتها`, link: '/settlements' }); }
+  }
+  add('settlementFarmAlloc', 'التسويات', 'warn', 'تسوية خصّصت ربحاً لحساب «المزرعة»', farmAlloc, { hint: 'تسوية قديمة قبل استبعاد حساب المزرعة. الغِها وأعد اعتمادها لتُحسب الحصص الصحيحة.' });
+  add('settlementCapitalMode', 'التسويات', 'warn', 'طريقة تقسيم تسوية (أثلاث/نصفين) تخالف تاريخ إغلاق رأس المال', modeBad);
   add('settlementOverlap', 'التسويات', 'error', 'تسويات معتمدة متداخلة', stBad);
   add('settlementAlloc', 'التسويات', 'error', 'حصص التسوية لا تطابق قيود الشركاء', allocBad);
   add('distributionExceeds', 'التسويات', 'error', 'توزيع نقدي أكبر من حصة الشريك في التسوية', distBad);
@@ -167,6 +193,9 @@ export function auditData(D = {}) {
     row(`ثمن حيوانات دفعها الشركاء (أحداث الشراء) ↔ قيود حساباتهم بدون التبادل (${c})`, 0, sumC(purchases.filter((e) => e.paidFrom === 'partner'), (e) => e.value), sumC(ledLive.filter((l) => l.type === 'animal_purchase_paid' && !l.exchangeId), (l) => l.amount), c);
     const exLed = ledLive.filter((l) => l.type === 'animal_purchase_paid' && l.exchangeId && cur(l) === c); const exIds = [...new Set(exLed.map((l) => l.exchangeId))];
     if (exLed.length) row(`فروق تبادل دفعها الشركاء (قيمة الوارد − الخارج) ↔ قيود حساباتهم (${c})`, 0, exIds.reduce((x, id) => { const g = exByKey[id] || {}; return x + Math.max(0, n(g.in?.value) - (g.outSum ?? n(g.out?.value))); }, 0), exLed.reduce((x, l) => x + n(l.amount), 0), c);
+    // فروق تبادل استلمناها (قيمة الوارد < الخارج): تذهب لدافعي ثمن الحيوان الخارج (قيود سداد) و/أو الصندوق
+    const recvIds = Object.keys(exByKey).filter((id) => { const g = exByKey[id]; return g.in && cur(g.in) === c && n(g.in.value) < (g.outSum ?? n(g.out?.value)) - 0.005; });
+    if (recvIds.length) row(`فروق تبادل استلمناها ↔ قيود سداد لدافعي الحيوان + حركات الصندوق (${c})`, 0, recvIds.reduce((x, id) => x + ((exByKey[id].outSum ?? 0) - n(exByKey[id].in.value)), 0), sumC(ledLive.filter((l) => l.type === 'animal_purchase_repaid' && recvIds.includes(l.exchangeId)), (l) => l.amount) + sumC(cash.filter((t) => t.type === 'animal_exchange_receipt' && recvIds.includes(t.exchangeId)), (t) => t.amount), c);
     row(`أصل قروض الشركاء ↔ قيود حساباتهم (${c})`, 0, sumC(live(loans), (l) => l.principal), sumC(ledLive.filter((l) => l.type === 'loan_given'), (l) => l.amount), c);
     row(`أصل قروض الشركاء ↔ حركات دخول الصندوق (${c})`, 0, sumC(live(loans), (l) => l.principal), sumC(cash.filter((t) => t.type === 'loan_received'), (t) => t.amount), c);
     row(`سدادات أصل القروض ↔ قيود حسابات الشركاء (${c})`, 0, sumC(live(loanReps), (r) => r.principalAmount), sumC(ledLive.filter((l) => l.type === 'loan_principal_repayment'), (l) => l.amount), c);

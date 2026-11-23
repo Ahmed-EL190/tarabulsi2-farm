@@ -6,7 +6,7 @@ import AnimalSale from '../components/AnimalSale';
 import ExchangeModal from '../components/ExchangeModal';
 import { Card, Stat, Table, Badge, Modal, Empty, PageHeader, Avatar, money, fmt, today } from '../components/ui';
 import { useCol, useSettings, useCustomLists, createAnimal, saveRecord, commit, newId } from '../data/db';
-import { recordAnimalEvent, partnerMovement, voidAnimalCascade, voidAnimalEventCascade, voidExchange, animalPurchasePayment, linkPurchasesToPartner, voidInitialCapital, repayPartner, switchExchangeDiffToPartner, voidCashTransactions, addCustomCategory, updateLedgerEntry, voidLedgerEntry, changePurchasePayer, changePurchasePrice } from '../data/ops';
+import { recordAnimalEvent, partnerMovement, voidAnimalCascade, voidAnimalEventCascade, voidExchange, saveCalfLog, voidCalfLog, animalPurchasePayment, linkPurchasesToPartner, voidInitialCapital, repayPartner, switchExchangeDiffToPartner, voidCashTransactions, addCustomCategory, updateLedgerEntry, voidLedgerEntry, changePurchasePayer, changePurchasePrice } from '../data/ops';
 import { useAuth } from '../data/auth';
 import { customerPosition, customerStatement, partnerLedger, herdState, animalExchange, validateNewAnimal, animalProfile, partnerDebt, cashBalances, herdValue, purchaseSource, round2, LEDGER_TYPES, partnerInvestment, capitalOf, stockCosting, effectiveProfitShares, profitGroupOf, allocateProfitByThirds, isCapitalClosed, capitalStatus, calfFattening, monthsBetween, supplierPayable, animalExchangeInfo, animalResultInfo, monthLabel } from '../lib/finance';
 import { CURRENCIES, LEDGER_AR, allAnimalCategories, animalCatLabel, NEW_CAT } from '../lib/constants';
@@ -497,7 +497,7 @@ export function CalfFattening() {
   const sum = ids.map((id) => ({ id, name: tagOf(id), ...calfFattening(id, logs, { from, to }) })).sort((a, b) => a.name.localeCompare(b.name));
   const report = { farm: s.farmName, title: `ملخص تسمين العجول${from || to ? ` (${from || '…'} ← ${to || '…'})` : ''}`, columns: [{ key: 'name', label: 'العجل' }, { key: 'startWeight', label: 'وزن البداية (كغ)' }, { key: 'endWeight', label: 'آخر وزن (كغ)' }, { key: 'gain', label: 'الزيادة (كغ)' }, { key: 'dailyGain', label: 'الزيادة اليومية (كغ)' }, { key: 'feed', label: 'العلف (كغ)' }, { key: 'milk', label: 'الحليب (لتر)' }, { key: 'otherTxt', label: 'بنود أخرى' }], rows: sum.map((r) => ({ ...r, otherTxt: objText(r.other) })) };
   const unit = (t) => CALF_UNIT[t] || '';
-  const norm = (d, a) => ({ calfId: d.calfId, tag: a?.tag || '', date: d.date, type: d.type, qty: Number(d.qty), unit: unit(d.type) || String(d.unit || '').trim(), item: ['feed', 'other'].includes(d.type) ? String(d.item || '').trim() : '', notes: d.notes || '' });
+  const norm = (d, a, st) => ({ calfId: d.calfId, tag: a?.tag || '', date: d.date, type: d.type, qty: Number(d.qty), unit: (d.type === 'feed' && st?.unit) || unit(d.type) || String(d.unit || '').trim(), item: ['feed', 'other'].includes(d.type) ? (String(d.item || '').trim() || (d.type === 'feed' ? st?.name || '' : '')) : '', stockItemId: d.type === 'feed' ? d.stockItemId || '' : '', notes: d.notes || '' });
   const check = (d) => { if (!d.calfId) throw new Error('اختر العجل'); if (!(Number(d.qty) > 0)) throw new Error('أدخل رقماً أكبر من صفر'); if (d.type === 'other' && !String(d.item || '').trim()) throw new Error('اكتب اسم البند'); };
   const inView = (r) => (!calfId || r.calfId === calfId) && (!from || r.date >= from) && (!to || r.date <= to);
   return (<div className="space-y-4">
@@ -513,23 +513,25 @@ export function CalfFattening() {
         { key: 'sw', label: 'وزن البداية', render: (r) => (r.startWeight === null ? '—' : <span className="num">{fmt(r.startWeight)} كغ</span>) },
         { key: 'ew', label: 'آخر وزن', render: (r) => (r.endWeight === null ? '—' : <span className="num">{fmt(r.endWeight)} كغ</span>) },
         { key: 'gain', label: 'الزيادة', render: (r) => (r.gain === null ? '—' : <b className={`num ${r.gain >= 0 ? 'text-emerald-700' : 'text-rose-600'}`}>{fmt(r.gain)} كغ{r.dailyGain !== null ? ` (${fmt(r.dailyGain)}/يوم)` : ''}</b>) },
-        { key: 'feed', label: 'العلف المستهلك', render: (r) => <div><b className="num">{fmt(r.feed)} كغ</b>{Object.keys(r.feedByItem).length > 1 && <div className="text-xs text-slate-500">{objText(r.feedByItem)}</div>}</div> },
+        { key: 'feed', label: 'العلف المستهلك', render: (r) => <div><b className="num">{fmt(r.feed)} كغ</b>{(Object.keys(r.feedByItem).length > 1 || Object.keys(r.feedByItem).some((k) => k.includes('('))) && <div className="text-xs text-slate-500">{objText(r.feedByItem)}</div>}</div> },
         { key: 'milk', label: 'الحليب المستهلك', render: (r) => <b className="num">{fmt(r.milk)} لتر</b> },
         { key: 'fc', label: 'كغ علف لكل كغ زيادة', hideMobile: true, render: (r) => (r.feedPerKgGain === null ? '—' : <span className="num">{fmt(r.feedPerKgGain)}</span>) },
         { key: 'oth', label: 'بنود أخرى', hideMobile: true, render: (r) => objText(r.other) || '—' }]} />
       <p className="mt-2 text-xs text-slate-500">الاستهلاك يُجمَع ضمن الفترة المختارة (فارغة = من البداية). الزيادة = آخر وزن − وزن البداية.</p>
     </Card>
     <CrudPage title="سجل تسمين العجول" subtitle="وزن العجل عند وصوله مع أمه، ثم كل علف وحليب وبند آخر يستهلكه — لتعرف بعد أشهر كم كلّفك" col="calfLogs" searchKeys={['tag', 'item', 'notes']} filter={inView}
-      useCtx={() => ({ animals: useCol('animals').rows })} defaults={{ type: 'feed' }}
+      useCtx={() => ({ animals: useCol('animals').rows, stock: useCol('stockMovements').rows, items: useCol('stockItems').rows })} defaults={{ type: 'feed' }}
+      onVoid={(u, r, c, why) => voidCalfLog(u, r, c, why)}
       fields={[{ name: 'calfId', label: 'العجل', type: 'rel', col: 'animals', optLabel: animalLabel, where: isCalf, required: true },
         { name: 'date', label: 'التاريخ', type: 'date', required: true },
         { name: 'type', label: 'النوع', type: 'select', required: true, options: CALF_TYPES, default: 'feed' },
         { name: 'qty', label: 'الكمية / الوزن (كغ للوزن والعلف، لتر للحليب)', type: 'number', min: 0, required: true, positive: true },
+        { name: 'stockItemId', label: 'صنف العلف من المخزون (تُخصم الكمية منه تلقائياً بوحدة الصنف)', type: 'rel', col: 'stockItems', optLabel: (r) => `${r.name}${r.unit ? ` (${r.unit})` : ''}`, showIf: (v) => v.type === 'feed' },
         { name: 'item', label: 'نوع العلف (اختياري) / اسم البند الآخر (مطلوب)', type: 'text', showIf: (v) => v.type === 'feed' || v.type === 'other' },
         { name: 'unit', label: 'وحدة البند الآخر (كغ، جرعة، …)', type: 'text', showIf: (v) => v.type === 'other' },
         { name: 'notes', label: 'ملاحظات', type: 'textarea' }]}
-      create={async (u, d, { animals: an }) => { check(d); return saveRecord(u, 'calfLogs', norm(d, an.find((a) => a.id === d.calfId))); }}
-      update={async (u, d, rec, { animals: an }) => { check(d); return saveRecord(u, 'calfLogs', norm(d, an.find((a) => a.id === d.calfId)), rec.id); }}
+      create={async (u, d, c) => { check(d); const st = c.items.find((i) => i.id === d.stockItemId); return saveCalfLog(u, norm(d, c.animals.find((a) => a.id === d.calfId), st), { stock: c.stock, itemName: st?.name || '' }); }}
+      update={async (u, d, rec, c) => { check(d); const st = c.items.find((i) => i.id === d.stockItemId); return saveCalfLog(u, norm(d, c.animals.find((a) => a.id === d.calfId), st), { existing: rec, stock: c.stock, itemName: st?.name || '' }); }}
       cols={(ctx) => [{ key: 'date', label: 'التاريخ' }, { key: 'c', label: 'العجل', render: (r) => animalLabel(ctx.animals.find((a) => a.id === r.calfId) || { tag: r.tag || '—' }) },
         { key: 'type', label: 'النوع', render: (r) => <Badge tone={r.type === 'feed' ? 'amber' : r.type === 'milk' ? 'blue' : r.type === 'other' ? 'gray' : 'green'}>{CALF_AR[r.type] || r.type}</Badge> },
         { key: 'item', label: 'البند', hideMobile: true, render: (r) => r.item || '—' }, { key: 'qty', label: 'الكمية', render: (r) => <b className="num">{fmt(r.qty)} {r.unit || ''}</b> }, { key: 'notes', label: 'ملاحظات', hideMobile: true }]} />
