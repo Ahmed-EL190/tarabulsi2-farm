@@ -8,7 +8,7 @@ import { Card, Stat, Table, Badge, Modal, Empty, PageHeader, Avatar, money, fmt,
 import { useCol, useSettings, useCustomLists, createAnimal, saveRecord, commit, newId } from '../data/db';
 import { recordAnimalEvent, partnerMovement, voidAnimalCascade, voidAnimalEventCascade, voidExchange, saveCalfLog, voidCalfLog, animalPurchasePayment, linkPurchasesToPartner, voidInitialCapital, repayPartner, switchExchangeDiffToPartner, voidCashTransactions, addCustomCategory, updateLedgerEntry, voidLedgerEntry, changePurchasePayer, changePurchasePrice } from '../data/ops';
 import { useAuth } from '../data/auth';
-import { customerPosition, customerStatement, partnerLedger, herdState, animalExchange, validateNewAnimal, animalProfile, partnerDebt, cashBalances, herdValue, purchaseSource, round2, LEDGER_TYPES, partnerInvestment, capitalOf, stockCosting, effectiveProfitShares, profitGroupOf, allocateProfitByThirds, isCapitalClosed, capitalStatus, calfFattening, monthsBetween, supplierPayable, animalExchangeInfo, animalResultInfo, monthLabel } from '../lib/finance';
+import { customerPosition, customerStatement, partnerLedger, herdState, animalExchange, validateNewAnimal, animalProfile, partnerDebt, cashBalances, herdValue, purchaseSource, round2, LEDGER_TYPES, partnerInvestment, capitalOf, stockCosting, calfCost, effectiveProfitShares, profitGroupOf, allocateProfitByThirds, isCapitalClosed, capitalStatus, calfFattening, monthsBetween, supplierPayable, animalExchangeInfo, animalResultInfo, monthLabel } from '../lib/finance';
 import { CURRENCIES, LEDGER_AR, allAnimalCategories, animalCatLabel, NEW_CAT } from '../lib/constants';
 const animalOpt = (r) => `${r.tag}${r.name ? ' - ' + r.name : ''}`;
 
@@ -485,19 +485,22 @@ export function AnimalEvents() {
 const CALF_TYPES = [['arrival_weight', 'وزن عند الوصول / الميلاد (جاء مع أمه)'], ['weight', 'وزن دوري'], ['feed', 'علف مستهلك'], ['milk', 'حليب مستهلك'], ['other', 'بند آخر (دواء، مكمّل، …)']];
 const CALF_AR = { arrival_weight: 'وزن الوصول', weight: 'وزن دوري', feed: 'علف', milk: 'حليب', other: 'بند آخر' };
 const CALF_UNIT = { arrival_weight: 'كغ', weight: 'كغ', feed: 'كغ', milk: 'لتر' };
+const costable = (v) => v.type === 'other' || (v.type === 'feed' && !v.stockItemId);
 const objText = (o) => Object.entries(o || {}).map(([k, v]) => `${k}: ${fmt(v)}`).join('، ');
 /** عجول تسمين: وزن عند الوصول + أوزان دورية + علف وحليب وبنود أخرى لكل عجل، مع ملخص استهلاك لأي فترة (مثلاً بعد 5 أشهر). */
 export function CalfFattening() {
-  const s = useSettings(); const animals = useCol('animals').rows; const events = useCol('animalEvents').rows; const logs = useCol('calfLogs').rows.filter((l) => !l.voided);
+  const s = useSettings(); const animals = useCol('animals').rows; const events = useCol('animalEvents').rows; const logs = useCol('calfLogs').rows.filter((l) => !l.voided); const expRows = useCol('expenses').rows; const stockRows = useCol('stockMovements').rows;
   const [from, setFrom] = useState(''); const [to, setTo] = useState(''); const [calfId, setCalfId] = useState('');
   const herd = herdState(events, animals);
+  const costing = useMemo(() => stockCosting(expRows, stockRows), [expRows, stockRows]);
+  const costText = (o) => Object.entries(o || {}).map(([c, a]) => money(a, c)).join(' + ') || '—';
   const isCalf = (a) => !!herd[a.id]?.active && (a.category === 'heifer_calf' || !!a.motherId || (!!a.birthDate && monthsBetween(a.birthDate, today()) <= 12));
   const ids = [...new Set(logs.map((l) => l.calfId))].filter((id) => animals.some((a) => a.id === id && !a.voided) && (!calfId || id === calfId));
   const tagOf = (id) => { const a = animals.find((x) => x.id === id); return a ? animalLabel(a) : '—'; };
-  const sum = ids.map((id) => ({ id, name: tagOf(id), ...calfFattening(id, logs, { from, to }) })).sort((a, b) => a.name.localeCompare(b.name));
-  const report = { farm: s.farmName, title: `ملخص تسمين العجول${from || to ? ` (${from || '…'} ← ${to || '…'})` : ''}`, columns: [{ key: 'name', label: 'العجل' }, { key: 'startWeight', label: 'وزن البداية (كغ)' }, { key: 'endWeight', label: 'آخر وزن (كغ)' }, { key: 'gain', label: 'الزيادة (كغ)' }, { key: 'dailyGain', label: 'الزيادة اليومية (كغ)' }, { key: 'feed', label: 'العلف (كغ)' }, { key: 'milk', label: 'الحليب (لتر)' }, { key: 'otherTxt', label: 'بنود أخرى' }], rows: sum.map((r) => ({ ...r, otherTxt: objText(r.other) })) };
+  const sum = ids.map((id) => ({ id, name: tagOf(id), ...calfFattening(id, logs, { from, to }), cost: calfCost(id, logs, costing.consumption, { from, to }) })).sort((a, b) => a.name.localeCompare(b.name));
+  const report = { farm: s.farmName, title: `ملخص تسمين العجول${from || to ? ` (${from || '…'} ← ${to || '…'})` : ''}`, columns: [{ key: 'name', label: 'العجل' }, { key: 'startWeight', label: 'وزن البداية (كغ)' }, { key: 'endWeight', label: 'آخر وزن (كغ)' }, { key: 'gain', label: 'الزيادة (كغ)' }, { key: 'dailyGain', label: 'الزيادة اليومية (كغ)' }, { key: 'feed', label: 'العلف (كغ)' }, { key: 'milk', label: 'الحليب (لتر)' }, { key: 'costTxt', label: 'التكلفة' }, { key: 'otherTxt', label: 'بنود أخرى' }], rows: sum.map((r) => ({ ...r, otherTxt: objText(r.other), costTxt: costText(r.cost.total) })) };
   const unit = (t) => CALF_UNIT[t] || '';
-  const norm = (d, a, st) => ({ calfId: d.calfId, tag: a?.tag || '', date: d.date, type: d.type, qty: Number(d.qty), unit: (d.type === 'feed' && st?.unit) || unit(d.type) || String(d.unit || '').trim(), item: ['feed', 'other'].includes(d.type) ? (String(d.item || '').trim() || (d.type === 'feed' ? st?.name || '' : '')) : '', stockItemId: d.type === 'feed' ? d.stockItemId || '' : '', notes: d.notes || '' });
+  const norm = (d, a, st) => ({ calfId: d.calfId, tag: a?.tag || '', date: d.date, type: d.type, qty: Number(d.qty), unit: (d.type === 'feed' && st?.unit) || unit(d.type) || String(d.unit || '').trim(), item: ['feed', 'other'].includes(d.type) ? (String(d.item || '').trim() || (d.type === 'feed' ? st?.name || '' : '')) : '', stockItemId: d.type === 'feed' ? d.stockItemId || '' : '', cost: (d.type === 'other' || (d.type === 'feed' && !d.stockItemId)) ? Number(d.cost) || 0 : 0, currency: d.currency || 'SYP', notes: d.notes || '' });
   const check = (d) => { if (!d.calfId) throw new Error('اختر العجل'); if (!(Number(d.qty) > 0)) throw new Error('أدخل رقماً أكبر من صفر'); if (d.type === 'other' && !String(d.item || '').trim()) throw new Error('اكتب اسم البند'); };
   const inView = (r) => (!calfId || r.calfId === calfId) && (!from || r.date >= from) && (!to || r.date <= to);
   return (<div className="space-y-4">
@@ -515,9 +518,10 @@ export function CalfFattening() {
         { key: 'gain', label: 'الزيادة', render: (r) => (r.gain === null ? '—' : <b className={`num ${r.gain >= 0 ? 'text-emerald-700' : 'text-rose-600'}`}>{fmt(r.gain)} كغ{r.dailyGain !== null ? ` (${fmt(r.dailyGain)}/يوم)` : ''}</b>) },
         { key: 'feed', label: 'العلف المستهلك', render: (r) => <div><b className="num">{fmt(r.feed)} كغ</b>{(Object.keys(r.feedByItem).length > 1 || Object.keys(r.feedByItem).some((k) => k.includes('('))) && <div className="text-xs text-slate-500">{objText(r.feedByItem)}</div>}</div> },
         { key: 'milk', label: 'الحليب المستهلك', render: (r) => <b className="num">{fmt(r.milk)} لتر</b> },
+        { key: 'cost', label: 'التكلفة', render: (r) => <div><b className="num">{costText(r.cost.total)}</b>{Object.keys(r.cost.feed).length > 0 && Object.keys(r.cost.other).length > 0 && <div className="text-xs text-slate-500">علف {costText(r.cost.feed)} · أخرى {costText(r.cost.other)}</div>}</div> },
         { key: 'fc', label: 'كغ علف لكل كغ زيادة', hideMobile: true, render: (r) => (r.feedPerKgGain === null ? '—' : <span className="num">{fmt(r.feedPerKgGain)}</span>) },
         { key: 'oth', label: 'بنود أخرى', hideMobile: true, render: (r) => objText(r.other) || '—' }]} />
-      <p className="mt-2 text-xs text-slate-500">الاستهلاك يُجمَع ضمن الفترة المختارة (فارغة = من البداية). الزيادة = آخر وزن − وزن البداية.</p>
+      <p className="mt-2 text-xs text-slate-500">الاستهلاك يُجمَع ضمن الفترة المختارة (فارغة = من البداية). الزيادة = آخر وزن − وزن البداية. التكلفة = علف المخزون بمتوسط سعر شرائه + أي بند كتبت له تكلفة (دواء أو علف خارج المخزون).</p>
     </Card>
     <CrudPage title="سجل تسمين العجول" subtitle="وزن العجل عند وصوله مع أمه، ثم كل علف وحليب وبند آخر يستهلكه — لتعرف بعد أشهر كم كلّفك" col="calfLogs" searchKeys={['tag', 'item', 'notes']} filter={inView}
       useCtx={() => ({ animals: useCol('animals').rows, stock: useCol('stockMovements').rows, items: useCol('stockItems').rows })} defaults={{ type: 'feed' }}
@@ -532,12 +536,14 @@ export function CalfFattening() {
           hint: (v) => (v.type === 'other' ? 'اكتب اسم الدواء أو المكمّل اللي اتعطى للعجل، واكتب وحدته في الحقل اللي تحت (جرعة، حقنة، كغ…).' : 'لو اخترت صنف من المخزون فوق، سيب الخانة دي فاضية — الاسم بيتاخد منه تلقائياً. اكتب هنا بس لو العلف مش مسجّل في المخزون.'),
           showIf: (v) => v.type === 'other' || (v.type === 'feed' && !v.stockItemId) },
         { name: 'unit', label: 'وحدة البند (كغ، جرعة، حقنة، …)', type: 'text', placeholder: 'مثال: جرعة', showIf: (v) => v.type === 'other' },
+        { name: 'cost', label: 'التكلفة (اختياري)', type: 'number', min: 0, showIf: costable, placeholder: 'مثال: 15000', hint: 'بتظهر في تكلفة العجل بس، ومش بتتسجل كمصروف. لو العلف من المخزون التكلفة بتتحسب لوحدها.' },
+        { ...cur, required: false, showIf: costable },
         { name: 'notes', label: 'ملاحظات', type: 'textarea' }]}
       create={async (u, d, c) => { check(d); const st = c.items.find((i) => i.id === d.stockItemId); return saveCalfLog(u, norm(d, c.animals.find((a) => a.id === d.calfId), st), { stock: c.stock, itemName: st?.name || '' }); }}
       update={async (u, d, rec, c) => { check(d); const st = c.items.find((i) => i.id === d.stockItemId); return saveCalfLog(u, norm(d, c.animals.find((a) => a.id === d.calfId), st), { existing: rec, stock: c.stock, itemName: st?.name || '' }); }}
       cols={(ctx) => [{ key: 'date', label: 'التاريخ' }, { key: 'c', label: 'العجل', render: (r) => animalLabel(ctx.animals.find((a) => a.id === r.calfId) || { tag: r.tag || '—' }) },
         { key: 'type', label: 'النوع', render: (r) => <Badge tone={r.type === 'feed' ? 'amber' : r.type === 'milk' ? 'blue' : r.type === 'other' ? 'gray' : 'green'}>{CALF_AR[r.type] || r.type}</Badge> },
-        { key: 'item', label: 'البند', hideMobile: true, render: (r) => r.item || '—' }, { key: 'qty', label: 'الكمية', render: (r) => <b className="num">{fmt(r.qty)} {r.unit || ''}</b> }, { key: 'notes', label: 'ملاحظات', hideMobile: true }]} />
+        { key: 'item', label: 'البند', hideMobile: true, render: (r) => r.item || '—' }, { key: 'qty', label: 'الكمية', render: (r) => <b className="num">{fmt(r.qty)} {r.unit || ''}</b> }, { key: 'cost', label: 'التكلفة', hideMobile: true, render: (r) => (Number(r.cost) > 0 ? money(r.cost, r.currency || 'SYP') : '—') }, { key: 'notes', label: 'ملاحظات', hideMobile: true }]} />
   </div>);
 }
 /** فروق تبادل قديمة دُفعت من الصندوق ← تُنقل إلى حساب شريك (تختار الشريك لكل فرق أو للكل). */

@@ -394,10 +394,22 @@ export function stockCosting(expenses = [], movements = []) {
     const s = (st[m.itemId] = st[m.itemId] || { qty: 0, cost: {} }); const q = n(m.qty);
     if (m.type === 'in') { s.qty = round2(s.qty + q); const e = m.expenseId ? expById[m.expenseId] : null; if (e) { linked.add(e.id); const c = e.currency || 'SYP'; s.cost[c] = (s.cost[c] || 0) + n(e.amount); } }
     else { const take = Math.min(q, s.qty); if (!(take > 0)) continue; const ratio = take / s.qty;
-      for (const [c, amt] of Object.entries(s.cost)) { const used = round2(amt * ratio); s.cost[c] = round2(amt - used); if (used) consumption.push({ date: m.date, currency: c, amount: used, itemId: m.itemId }); }
+      for (const [c, amt] of Object.entries(s.cost)) { const used = round2(amt * ratio); s.cost[c] = round2(amt - used); if (used) consumption.push({ date: m.date, currency: c, amount: used, itemId: m.itemId, calfLogId: m.calfLogId || null }); }
       s.qty = round2(s.qty - take); }
   }
   return { linked, consumption, valuation: st };
+}
+
+/** تكلفة عجل بالمال لكل عملة: علف من المخزون (متوسط مرجّح عند الاستهلاك، من stockCosting) + بنود كُتبت لها تكلفة يدوياً (دواء، علف خارج المخزون).
+ *  → { feed:{cur:amount}, other:{cur:amount}, total:{cur:amount} } */
+export function calfCost(calfId, logs = [], consumption = [], { from, to } = {}) {
+  const mine = logs.filter((l) => l.calfId === calfId && !l.voided && inRange(l.date, from, to));
+  const ids = new Set(mine.map((l) => l.id));
+  const feed = {}, other = {}, total = {};
+  const put = (o, c, a) => { if (!a) return; o[c] = round2((o[c] || 0) + a); total[c] = round2((total[c] || 0) + a); };
+  for (const x of consumption) if (x.calfLogId && ids.has(x.calfLogId)) put(feed, x.currency || 'SYP', n(x.amount));
+  for (const l of mine) { const a = n(l.cost); if (!(a > 0) || (l.type === 'feed' && l.stockItemId)) continue; if (l.type === 'feed' || l.type === 'other') put(l.type === 'feed' ? feed : other, l.currency || 'SYP', a); }
+  return { feed, other, total };
 }
 
 /** رأس المال مُغلق في هذا التاريخ؟ (closedFrom = تاريخ الإغلاق من الإعدادات؛ فارغ = ما زال مفتوحاً) */
