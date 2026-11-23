@@ -527,8 +527,11 @@ export function CalfFattening() {
         { name: 'type', label: 'النوع', type: 'select', required: true, options: CALF_TYPES, default: 'feed' },
         { name: 'qty', label: 'الكمية / الوزن (كغ للوزن والعلف، لتر للحليب)', type: 'number', min: 0, required: true, positive: true },
         { name: 'stockItemId', label: 'صنف العلف من المخزون (تُخصم الكمية منه تلقائياً بوحدة الصنف)', type: 'rel', col: 'stockItems', optLabel: (r) => `${r.name}${r.unit ? ` (${r.unit})` : ''}`, showIf: (v) => v.type === 'feed' },
-        { name: 'item', label: 'نوع العلف (اختياري) / اسم البند الآخر (مطلوب)', type: 'text', showIf: (v) => v.type === 'feed' || v.type === 'other' },
-        { name: 'unit', label: 'وحدة البند الآخر (كغ، جرعة، …)', type: 'text', showIf: (v) => v.type === 'other' },
+        { name: 'item', label: (v) => (v.type === 'other' ? 'اسم البند' : 'اسم العلف (اختياري)'), requiredIf: (v) => v.type === 'other', type: 'text',
+          placeholder: (v) => (v.type === 'other' ? 'مثال: فيتامين، مضاد حيوي، لقاح' : 'مثال: شعير، ردة، تبن'),
+          hint: (v) => (v.type === 'other' ? 'اكتب اسم الدواء أو المكمّل اللي اتعطى للعجل، واكتب وحدته في الحقل اللي تحت (جرعة، حقنة، كغ…).' : 'لو اخترت صنف من المخزون فوق، سيب الخانة دي فاضية — الاسم بيتاخد منه تلقائياً. اكتب هنا بس لو العلف مش مسجّل في المخزون.'),
+          showIf: (v) => v.type === 'other' || (v.type === 'feed' && !v.stockItemId) },
+        { name: 'unit', label: 'وحدة البند (كغ، جرعة، حقنة، …)', type: 'text', placeholder: 'مثال: جرعة', showIf: (v) => v.type === 'other' },
         { name: 'notes', label: 'ملاحظات', type: 'textarea' }]}
       create={async (u, d, c) => { check(d); const st = c.items.find((i) => i.id === d.stockItemId); return saveCalfLog(u, norm(d, c.animals.find((a) => a.id === d.calfId), st), { stock: c.stock, itemName: st?.name || '' }); }}
       update={async (u, d, rec, c) => { check(d); const st = c.items.find((i) => i.id === d.stockItemId); return saveCalfLog(u, norm(d, c.animals.find((a) => a.id === d.calfId), st), { existing: rec, stock: c.stock, itemName: st?.name || '' }); }}

@@ -54,15 +54,18 @@ function ImageField({ f, register, setValue, getValues }) {
     </div>
   );
 }
-export function FieldInput({ f, register, errors, setValue, getValues }) {
+export function FieldInput({ f, register, errors, setValue, getValues, vals = {} }) {
   const reg = register(f.name, f.type === 'number' ? { setValueAs: normNum } : undefined);
   if (f.type === 'image') return <ImageField f={f} register={register} setValue={setValue} getValues={getValues} />;
   let input;
   if (f.type === 'select') input = <select className="input" {...reg}>{!f.required && <option value="">—</option>}{f.options.map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select>;
   else if (f.type === 'rel') input = <RelSelect f={f} reg={reg} setValue={setValue} getValues={getValues} />;
   else if (f.type === 'textarea') input = <textarea className="input" rows={2} {...reg} />;
-  else input = <input className="input" type={f.type === 'date' ? 'date' : 'text'} {...(f.type === 'number' ? { inputMode: 'decimal', autoComplete: 'off' } : {})} dir={f.type === 'number' || f.type === 'date' ? 'ltr' : undefined} {...reg} />;
-  return <Field label={f.label + (f.required ? ' *' : '')} error={errors[f.name]?.message}>{input}</Field>;
+  else input = <input className="input" type={f.type === 'date' ? 'date' : 'text'} placeholder={typeof f.placeholder === 'function' ? f.placeholder(vals) : f.placeholder} {...(f.type === 'number' ? { inputMode: 'decimal', autoComplete: 'off' } : {})} dir={f.type === 'number' || f.type === 'date' ? 'ltr' : undefined} {...reg} />;
+  const label = typeof f.label === 'function' ? f.label(vals) : f.label;
+  const req = f.required || (f.requiredIf && f.requiredIf(vals));
+  const hint = typeof f.hint === 'function' ? f.hint(vals) : f.hint;
+  return <Field label={label + (req ? ' *' : '')} error={errors[f.name]?.message}>{input}{hint && <span className="mt-1 block text-xs font-normal text-slate-500">{hint}</span>}</Field>;
 }
 
 /** Reusable form modal. Used by CrudPage and by custom pages. */
@@ -80,7 +83,7 @@ export function FormModal({ open, onClose, title, fields, defaults, onSubmit, su
       <form onSubmit={go} className="space-y-3">
         <Toast msg={err} />
         {intro}
-        <div className="grid gap-3 sm:grid-cols-2">{shown.map((f) => <div key={f.name} className={f.type === 'textarea' ? 'sm:col-span-2' : ''}><FieldInput f={f} register={register} errors={errors} setValue={setValue} getValues={getValues} /></div>)}</div>
+        <div className="grid gap-3 sm:grid-cols-2">{shown.map((f) => <div key={f.name} className={f.type === 'textarea' ? 'sm:col-span-2' : ''}><FieldInput f={f} register={register} errors={errors} setValue={setValue} getValues={getValues} vals={vals} /></div>)}</div>
         <div className="flex justify-end gap-2 pt-2"><button type="button" className="btn btn-ghost" onClick={onClose}>إلغاء</button><button className="btn btn-primary" disabled={isSubmitting}>{submitLabel}</button></div>
       </form>
     </Modal>
