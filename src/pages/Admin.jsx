@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import { initializeApp, deleteApp } from 'firebase/app';
 import { getAuth, createUserWithEmailAndPassword, signOut } from 'firebase/auth';
 import { doc, setDoc, serverTimestamp } from 'firebase/firestore';
@@ -11,6 +11,8 @@ import { useAuth } from '../data/auth';
 import { ROLES } from '../lib/permissions';
 import { normNum } from '../lib/num';
 import { CURRENCIES, EXPENSE_CATEGORIES, ANIMAL_CATEGORIES } from '../lib/constants';
+import { buildOperations, ACTION_AR, ACTION_TONE, AREAS } from '../lib/auditText';
+import { MONTHS_AR } from '../lib/finance';
 import { Pencil, Trash2 } from 'lucide-react';
 
 const ROLE_AR = { admin: 'مدير', accountant: 'محاسب', data_entry: 'مدخل بيانات', viewer: 'مشاهد' };
@@ -97,14 +99,46 @@ export function Settings() {
 }
 
 export function Audit() {
-  const rows = useAudit(); const { can } = useAuth();
-  const [q, setQ] = useState('');
-  const shown = rows.filter((r) => !q || JSON.stringify(r).includes(q));
+  const [max, setMax] = useState(300); const rows = useAudit(max);
+  const partners = useCol('partners').rows, accounts = useCol('cashAccounts').rows, customers = useCol('customers').rows;
+  const [q, setQ] = useState(''); const [user, setUser] = useState(''); const [area, setArea] = useState(''); const [act, setAct] = useState(''); const [open, setOpen] = useState({});
+  const ctx = useMemo(() => ({ partner: (id) => partners.find((x) => x.id === id)?.name || '', account: (id) => accounts.find((x) => x.id === id)?.name || '', customer: (id) => customers.find((x) => x.id === id)?.name || '' }), [partners, accounts, customers]);
+  const ops = useMemo(() => buildOperations(rows, ctx), [rows, ctx]);
+  const users = [...new Set(ops.map((o) => o.user))].filter(Boolean);
+  const shown = ops.filter((o) => (!user || o.user === user) && (!area || o.areas.includes(area)) && (!act || o.action === act) && (!q || [o.title, o.reason, o.user, ...o.subs.map((x) => x.text)].join(' ').includes(q.trim())));
+  const days = []; shown.forEach((o) => { let g = days[days.length - 1]; if (!g || g.day !== o.day) { g = { day: o.day, at: o.at, list: [] }; days.push(g); } g.list.push(o); });
+  const dayLabel = (d) => { if (!d) return '—'; const t = new Date(); const key = (x) => `${x.getFullYear()}-${x.getMonth()}-${x.getDate()}`; const y = new Date(t); y.setDate(t.getDate() - 1);
+    const base = `${new Intl.DateTimeFormat('ar', { weekday: 'long' }).format(d)} ${d.getDate()} ${MONTHS_AR[d.getMonth()]} ${d.getFullYear()}`; return key(d) === key(t) ? `اليوم — ${base}` : key(d) === key(y) ? `أمس — ${base}` : base; };
+  const time = (d) => (d ? d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }) : '');
   return (
     <div>
-      <PageHeader title="سجل التدقيق" subtitle="كل إنشاء وتعديل وإلغاء مسجّل ولا يمكن تعديله" />
-      <Card><input className="input mb-3 w-full sm:max-w-xs" placeholder="بحث" value={q} onChange={(e) => setQ(e.target.value)} />
-        <Table rows={shown} empty={<Empty title="لا توجد أحداث" />} columns={[{ key: 'at', label: 'الوقت', render: (r) => (r.at?.toDate ? r.at.toDate().toLocaleString('en-GB') : '…') }, { key: 'userName', label: 'المستخدم' }, { key: 'action', label: 'الإجراء' }, { key: 'collection', label: 'المجموعة' }, { key: 'docId', label: 'المعرّف', hideMobile: true }, { key: 'summary', label: 'التفاصيل', render: (r) => <span className="line-clamp-1 max-w-xs text-xs text-slate-500">{r.summary}</span> }]} /></Card>
+      <PageHeader title="سجل التدقيق" subtitle="من سجّل أو عدّل أو ألغى ماذا ومتى — لا يمكن تعديله أو حذفه" />
+      <Card>
+        <div className="mb-3 grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:items-end">
+          <input className="input col-span-2 sm:w-64" placeholder="بحث (رقم بقرة، اسم، مبلغ…)" value={q} onChange={(e) => setQ(e.target.value)} />
+          <select className="input sm:w-44" value={user} onChange={(e) => setUser(e.target.value)}><option value="">كل المستخدمين</option>{users.map((u) => <option key={u} value={u}>{u}</option>)}</select>
+          <select className="input sm:w-44" value={area} onChange={(e) => setArea(e.target.value)}><option value="">كل المجالات</option>{AREAS.map((a) => <option key={a} value={a}>{a}</option>)}</select>
+          <select className="input col-span-2 sm:col-span-1 sm:w-40" value={act} onChange={(e) => setAct(e.target.value)}><option value="">كل الإجراءات</option>{['create', 'update', 'void', 'delete', 'finalize'].map((a) => <option key={a} value={a}>{ACTION_AR[a]}</option>)}</select>
+        </div>
+        <div className="mb-3 text-xs text-slate-500">{shown.length} عملية (من آخر {rows.length} سطراً في السجل). كل «عملية» قد تضم عدة سجلات حدثت معاً، مثل مصروف وحركة مخزونه.</div>
+        {!days.length && <Empty title="لا توجد أحداث مطابقة" />}
+        <div className="space-y-5">{days.map((g) => (<div key={g.day}>
+          <div className="mb-2 text-sm font-extrabold text-slate-700">{dayLabel(g.at)}</div>
+          <div className="space-y-2">{g.list.map((o) => { const isOpen = !!open[o.id]; const hasMore = o.subs.length > 0 || o.fields.length > 0;
+            return (<div key={o.id} className="rounded-xl border border-slate-200 bg-white p-3">
+              <div className="flex flex-wrap items-center gap-2"><Badge tone={ACTION_TONE[o.action] || 'gray'}>{ACTION_AR[o.action] || o.action}</Badge><span className="num text-xs text-slate-500">{time(o.at)}</span><span className="text-xs font-bold text-slate-600">{o.user}</span>
+                <span className="ms-auto flex flex-wrap gap-1">{o.areas.map((a) => <span key={a} className="rounded bg-slate-100 px-1.5 py-0.5 text-[11px] text-slate-500">{a}</span>)}</span></div>
+              <div className="mt-1.5 text-sm font-bold text-slate-900">{o.title}</div>
+              {o.reason && <div className="mt-0.5 text-xs text-rose-700">السبب: {o.reason}</div>}
+              {hasMore && <button type="button" className="mt-1.5 text-xs font-bold text-emerald-700" onClick={() => setOpen((x) => ({ ...x, [o.id]: !isOpen }))}>{isOpen ? 'إخفاء التفاصيل' : `التفاصيل${o.subs.length ? ` (${o.subs.length} سجل مرتبط)` : ''}`}</button>}
+              {isOpen && <div className="mt-2 space-y-1.5 rounded-lg bg-slate-50 p-2.5 text-xs text-slate-700">
+                {o.subs.map((x, i) => <div key={i}>• {x.text}</div>)}
+                {o.fields.length > 0 && <div className="grid grid-cols-1 gap-x-4 sm:grid-cols-2">{o.fields.map(([k, v]) => <div key={k} className="flex justify-between gap-2 border-b border-slate-200 py-0.5"><span className="text-slate-500">{k}</span><span className="font-medium">{v}</span></div>)}</div>}
+              </div>}
+            </div>); })}</div>
+        </div>))}</div>
+        {rows.length >= max && max < 1500 && <div className="mt-4 text-center"><button className="btn btn-ghost" onClick={() => setMax((m) => m + 300)}>عرض أقدم</button></div>}
+      </Card>
     </div>
   );
 }
