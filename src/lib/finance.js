@@ -383,6 +383,20 @@ export function capitalOf(partnerId, data = {}, { currency = 'SYP', from, to } =
   return { cows: round2(cows), equipment: round2(equipment), total: round2(cows + equipment), unit: currency, weighted: !!(from && to) };
 }
 
+/** صافي الربح لفترة بنفس معادلة التسوية بالضبط (مصدر واحد للتسوية والصفحة الرئيسية):
+ *  حليب + ربح/خسارة بيع المواشي + دخل آخر − مصروفات (العلف المرتبط بالمخزون عند الاستهلاك) − نفوق ± نتيجة التبادل.
+ *  d = { agreements, deliveries, expenses, cash, events, animals, stockMovements } */
+export function periodProfit(d = {}, { from, to, currency = 'SYP', stockCostingMode } = {}) {
+  const expenses = d.expenses || [];
+  const ap = animalPLInputs(d.events || [], d.animals || []);
+  const costing = stockCostingMode === 'purchase' ? null : stockCosting(expenses, d.stockMovements || []);
+  const pl = profitAndLoss({ agreements: d.agreements || [], deliveries: d.deliveries || [], expenses: costing ? expenses.filter((e) => !costing.linked.has(e.id)) : expenses,
+    otherIncome: (d.cash || []).filter((t) => t.type === 'other_income' && !t.voided), animalSales: ap.animalSales, animalPurchases: ap.animalPurchases, exchangeResults: ap.exchangeResults, deathLosses: ap.deathLosses,
+    stockConsumption: costing?.consumption || [], from, to, currency, animalPurchaseAsExpense: false });
+  const unconsumed = costing ? round2(Object.values(costing.valuation).reduce((t, v) => t + (v.cost[currency] || 0), 0)) : 0;
+  return { ...pl, unconsumed };
+}
+
 // ───────────── المخزون: تكلفة العلف عند الاستهلاك (متوسط مرجّح) ─────────────
 /** مشتريات مرتبطة بصنف مخزون لا تدخل الأرباح عند الشراء؛ يدخلها الاستهلاك فقط (كمية الصادر × متوسط التكلفة).
  *  → { linked: Set(معرّفات المصروفات المرتبطة), consumption: [{date,currency,amount,itemId}], valuation: {itemId:{qty,cost:{cur:amount}}} } */

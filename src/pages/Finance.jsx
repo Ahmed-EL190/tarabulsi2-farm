@@ -6,7 +6,7 @@ import { Card, Table, Badge, Empty, PageHeader, Stat, Modal, money, fmt, today }
 import { useCol, useSettings, useCustomLists, saveRecord, commit, voidRecord } from '../data/db';
 import { payExpense, addExpenseWithPayment, updateExpenseSynced, updateExpensePayment, voidExpensePayment, updateCustomerPayment, voidCustomerPayment, addCustomCategory, transferCash, addOtherIncome, createLoan, repayLoan, finalizeSettlement, partnerMovement, voidExpenseCascade, voidSettlement, voidDistribution, voidCashTransactions, linkExpensesToPartners, updateLedgerEntry, voidLedgerEntry, saveExpenseEdit, updateCashMovement, cashKind } from '../data/ops';
 import { useAuth } from '../data/auth';
-import { monthLabel, isCapitalClosed, capitalOf, stockCosting, allocateProfitByThirds, partnerInvestment, cashBalances, cashFlowSummary, expensePosition, loanPosition, partnerLedger, profitAndLoss, allocateProfit, validateShares, customerPosition, netCustomerBalance, animalPLInputs, findOrphanCash, round2, sumByCurrency } from '../lib/finance';
+import { periodProfit, monthLabel, isCapitalClosed, capitalOf, stockCosting, allocateProfitByThirds, partnerInvestment, cashBalances, cashFlowSummary, expensePosition, loanPosition, partnerLedger, profitAndLoss, allocateProfit, validateShares, customerPosition, netCustomerBalance, animalPLInputs, findOrphanCash, round2, sumByCurrency } from '../lib/finance';
 import { CURRENCIES, METHODS, allExpenseCategories, NEW_CAT, catLabel, CASH_AR, PARTNER_EXPENSE_CATS } from '../lib/constants';
 
 const cur = { name: 'currency', label: 'العملة', type: 'select', options: CURRENCIES, required: true, default: 'SYP' };
@@ -205,10 +205,8 @@ export function Settlements() {
   const clash = hist.find((h) => (h.currency || 'SYP') === c && !(to < h.from || from > h.to));
   const calc = useMemo(() => {
     const ap = animalPLInputs(events, animals, asExpense);
-    // تكلفة العلف عند الاستهلاك (افتراضي): مشتريات المخزون المرتبطة لا تدخل الأرباح عند الشراء، يدخلها الصادر بالمتوسط المرجّح
-    const costing = s.stockCostingMode === 'purchase' ? null : stockCosting(exps, stockMv);
-    const pl = profitAndLoss({ agreements: ags, deliveries: dls, expenses: costing ? exps.filter((e) => !costing.linked.has(e.id)) : exps, otherIncome: cash.filter((t) => t.type === 'other_income' && !t.voided), animalSales: ap.animalSales, animalPurchases: ap.animalPurchases, exchangeResults: ap.exchangeResults, deathLosses: ap.deathLosses, stockConsumption: costing?.consumption || [], from, to, currency: c, animalPurchaseAsExpense: false });
-    const unconsumed = costing ? round2(Object.values(costing.valuation).reduce((t, v) => t + (v.cost[c] || 0), 0)) : 0;
+    const pl = periodProfit({ agreements: ags, deliveries: dls, expenses: exps, cash, events, animals, stockMovements: stockMv }, { from, to, currency: c, stockCostingMode: s.stockCostingMode });
+    const unconsumed = pl.unconsumed;
     // الذمم حتى تاريخ نهاية الفترة (وليس حتى اليوم)
     const cc = (x) => (x.currency || 'SYP') === c; const upTo = (x) => !x.date || x.date <= to;
     const nets = custs.map((cu) => netCustomerBalance(cu.id, { agreements: ags.filter((x) => cc(x) && upTo(x)), deliveries: dls.filter(upTo), payments: pays.filter((x) => cc(x) && upTo(x)) }, c === 'SYP' ? cu.openingBalance : 0));

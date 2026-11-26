@@ -1,11 +1,11 @@
 import { Link } from 'react-router-dom';
 import { useMemo, useState } from 'react';
-import { Users, Milk, ShoppingCart, Wallet, Receipt, PawPrint, Droplets, UserPlus, FileText, Plus, CalendarDays } from 'lucide-react';
+import { Users, Milk, ShoppingCart, Wallet, Receipt, PawPrint, Droplets, UserPlus, FileText, Plus, CalendarDays, TrendingUp } from 'lucide-react';
 import { ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip, CartesianGrid, PieChart, Pie, Cell, BarChart, Bar, Legend } from 'recharts';
 import { Card, Stat, Empty, Table, Badge, fmt, money, today } from '../components/ui';
 import { useCol, useSettings, useCustomLists, useStoreStatus } from '../data/db';
 import { catLabel } from '../lib/constants';
-import { herdState, cashBalances, sumByCurrency, partnerLedger, partnerDebt, herdValue, operatingExpenses, salesLedger, salesTotals, round2, longDateAr } from '../lib/finance';
+import { herdState, cashBalances, sumByCurrency, partnerLedger, partnerDebt, herdValue, operatingExpenses, salesLedger, salesTotals, round2, longDateAr, periodProfit } from '../lib/finance';
 
 const COLORS = ['#2f7bd9', '#8b6fd6', '#f2a23a', '#4caf6a', '#ef5b5b', '#14b8a6'];
 
@@ -40,6 +40,13 @@ export default function Dashboard() {
   const cash = useCol('cashTransactions').rows; const partners = useCol('partners').rows.filter((p) => !p.voided);
   const ledger = useCol('partnerCapitalTransactions').rows; const events = useCol('animalEvents').rows; const animalsAll = useCol('animals').rows;
   const t = today();
+  const stockMv = useCol('stockMovements').rows;
+  // معاينة ربح الشهر الحالي والماضي بنفس معادلة التسوية (دالة واحدة مشتركة)
+  const prof = useMemo(() => {
+    const mFrom = `${t.slice(0, 7)}-01`; const pd = new Date(`${mFrom}T00:00:00Z`); pd.setUTCMonth(pd.getUTCMonth() - 1);
+    const data = { agreements: ags, deliveries: dls, expenses: exps, cash, events, animals: animalsAll, stockMovements: stockMv }; const opt = { currency: 'SYP', stockCostingMode: s.stockCostingMode };
+    return { mFrom, cur: periodProfit(data, { ...opt, from: mFrom, to: t }), prev: periodProfit(data, { ...opt, from: pd.toISOString().slice(0, 10), to: addDays(mFrom, -1) }) };
+  }, [ags, dls, exps, cash, events, animalsAll, stockMv, s.stockCostingMode, t]);
 
   // الافتراضي: كل الأيام
   const [preset, setPreset] = useState('all');
@@ -102,6 +109,18 @@ export default function Dashboard() {
       </div>
 
       {loadSt.loading > 0 && <div className="rounded-xl bg-amber-50 p-3 text-sm font-bold text-amber-800">جارٍ تحميل البيانات… الأرقام ستكتمل خلال لحظات.</div>}
+      {(() => {
+        const pc = prof.cur, pp = prof.prev; const diff = round2(pc.netProfit - pp.netProfit);
+        const lines = [['إيراد الحليب', pc.milkRevenue, true], ['ربح/خسارة بيع المواشي', pc.animalSales], ['دخل آخر', pc.otherIncome], ['المصروفات التشغيلية', -pc.operatingExpenses, true], ['علف/مخزون مستهلك', -pc.stockConsumption], ['خسارة نفوق', pc.deathLoss], ['نتيجة التبادل', pc.exchangeResult]].filter(([, v, always]) => always || v);
+        return (<Card title="ربح هذا الشهر (معاينة لحظية)" icon={TrendingUp} action={<Link to="/settlements" className="text-sm font-bold text-brand">فتح التسويات</Link>}>
+          <div className="flex flex-wrap items-end gap-x-8 gap-y-2">
+            <div><div className={`num text-3xl font-extrabold ${pc.netProfit >= 0 ? 'text-emerald-700' : 'text-rose-600'}`}>{money(pc.netProfit)}</div><div className="text-xs text-slate-500">من {prof.mFrom} إلى اليوم</div></div>
+            <div className="text-sm text-slate-600">الشهر الماضي: <b className="num">{money(pp.netProfit)}</b> — {diff === 0 ? 'بلا فرق' : diff > 0 ? `هذا الشهر أعلى بـ ${money(diff)}` : `هذا الشهر أقل بـ ${money(-diff)}`}</div>
+          </div>
+          <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-3 xl:grid-cols-6">{lines.map(([k, v]) => <div key={k} className="rounded-lg bg-slate-50 p-2"><div className="text-[11px] text-slate-500">{k}</div><b className={`num text-sm ${v < 0 ? 'text-rose-600' : ''}`}>{fmt(v)}</b></div>)}</div>
+          <div className="mt-2 text-xs text-slate-500">معاينة بنفس معادلة التسوية (حليب + بيع المواشي بالنتيجة − المصروفات − نفوق ± تبادل). غير معتمدة ولا تحرك نقداً.{pc.unconsumed > 0 ? ` علف مخزَّن لم يُستهلك: ${money(pc.unconsumed)} (لا يدخل الربح حتى تسجّل استهلاكه).` : ''}</div>
+        </Card>);
+      })()}
       <PeriodFilter preset={preset} setPreset={setPreset} cFrom={cFrom} setCFrom={setCFrom} cTo={cTo} setCTo={setCTo} label={periodLabel} />
 
       <div className="grid grid-cols-2 gap-2.5 sm:gap-3 md:grid-cols-3 xl:grid-cols-6">
