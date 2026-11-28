@@ -1,6 +1,7 @@
 // Multi-record financial operations. Each is ONE atomic batch so related records can never get out of sync.
 import { serverTimestamp } from 'firebase/firestore';
 import { allExpenseCategories, allAnimalCategories, PARTNER_EXPENSE_CATS } from '../lib/constants';
+import { laterDate } from '../lib/periodLock';
 import { planPartnerRepayment, allocateToLoans, loanPosition, partnerDebt, cashBalances, purchaseSource } from '../lib/finance';
 import { commit, nextNumber, newId } from './db';
 import { validateDelivery, validateExpensePayment, partnerFundedExpenseEntry, makeTransfer, allocateProfit } from '../lib/finance';
@@ -78,7 +79,7 @@ export const transferCash = (user, t) => { const id = newId('cashTransactions');
 export const addOtherIncome = (user, t) => commit(user, [{ col: 'cashTransactions', data: { ...t, type: 'other_income', direction: 'in' } }]);
 
 /** Finalising a settlement writes allocation entries to partner ledgers. It creates NO cash movement. */
-export async function finalizeSettlement(user, s, partners, existing = [], precomputed = null) {
+export async function finalizeSettlement(user, s, partners, existing = [], precomputed = null, currentLock = '') {
   if (!s.from || !s.to || s.from > s.to) throw new Error('الفترة غير صحيحة: تاريخ البداية يجب ألا يتجاوز النهاية');
   const clash = existing.find((x) => !x.voided && x.status !== 'voided' && (x.currency || 'SYP') === s.currency && !(s.to < x.from || s.from > x.to));
   if (clash) throw new Error(`هذه الفترة تتداخل مع تسوية معتمدة سابقاً (${clash.from} ← ${clash.to}). اعتماد تسويتين لنفس الأيام يكرّر توزيع الأرباح. ابدأ من اليوم التالي لآخر تسوية أو ألغِ السابقة.`);
@@ -88,6 +89,8 @@ export async function finalizeSettlement(user, s, partners, existing = [], preco
   return commit(user, [
     { col: 'settlements', id, data: { ...s, allocations: alloc, status: 'finalized', approvedBy: user.uid, approvedAt: today() }, action: 'finalize' },
     ...alloc.map((a) => ({ col: 'partnerCapitalTransactions', data: { partnerId: a.partnerId, date: s.to, type: 'profit_allocation', amount: a.amount, currency: s.currency, settlementId: id } })),
+    // تُقفل الفترة حتى نهاية هذه التسوية فلا تتغير أرقامها بتسجيل متأخر
+    { col: 'settings', id: 'main', merge: true, data: { lockedThrough: laterDate(currentLock, s.to), lockNote: `اعتماد تسوية ${s.from} إلى ${s.to}` } },
   ]);
 }
 export function recordAnimalEvent(user, ev, cash, ledger) {

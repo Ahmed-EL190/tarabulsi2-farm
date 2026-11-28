@@ -6,13 +6,62 @@ import { Card, Table, Badge, Empty, PageHeader, Stat, Modal, money, fmt, today }
 import { useCol, useSettings, useCustomLists, saveRecord, commit, voidRecord } from '../data/db';
 import { payExpense, addExpenseWithPayment, updateExpenseSynced, updateExpensePayment, voidExpensePayment, updateCustomerPayment, voidCustomerPayment, addCustomCategory, transferCash, addOtherIncome, createLoan, repayLoan, finalizeSettlement, partnerMovement, voidExpenseCascade, voidSettlement, voidDistribution, voidCashTransactions, linkExpensesToPartners, updateLedgerEntry, voidLedgerEntry, saveExpenseEdit, updateCashMovement, cashKind } from '../data/ops';
 import { useAuth } from '../data/auth';
-import { periodProfit, monthLabel, isCapitalClosed, capitalOf, stockCosting, allocateProfitByThirds, partnerInvestment, cashBalances, cashFlowSummary, expensePosition, loanPosition, partnerLedger, profitAndLoss, allocateProfit, validateShares, customerPosition, netCustomerBalance, animalPLInputs, findOrphanCash, round2, sumByCurrency } from '../lib/finance';
+import { countDiff, countAdjustmentTx, periodProfit, monthLabel, isCapitalClosed, capitalOf, stockCosting, allocateProfitByThirds, partnerInvestment, cashBalances, cashFlowSummary, expensePosition, loanPosition, partnerLedger, profitAndLoss, allocateProfit, validateShares, customerPosition, netCustomerBalance, animalPLInputs, findOrphanCash, round2, sumByCurrency } from '../lib/finance';
+import { numOf, lightNum } from '../lib/num';
 import { CURRENCIES, METHODS, allExpenseCategories, NEW_CAT, catLabel, CASH_AR, PARTNER_EXPENSE_CATS } from '../lib/constants';
 
 const cur = { name: 'currency', label: 'العملة', type: 'select', options: CURRENCIES, required: true, default: 'SYP' };
 const acct = { name: 'accountId', label: 'الصندوق / الحساب', type: 'rel', col: 'cashAccounts' };
 
 // ───────── الصندوق والحسابات
+/** جرد الصندوق: تعدّ ما في يدك فعلاً وتقارنه برصيد النظام؛ الفرق يُسجَّل، ومدير النظام يسوّيه بحركة صندوق معلَّمة. */
+function CashCount({ accounts, bal }) {
+  const { user, can } = useAuth(); const counts = useCol('cashCounts').rows.filter((x) => !x.voided);
+  const [m, setM] = useState(null); const [counted, setCounted] = useState(''); const [notes, setNotes] = useState(''); const [adj, setAdj] = useState(false); const [err, setErr] = useState('');
+  const items = Object.entries(bal).map(([k, v]) => { const [accountId, currency] = k.split('|'); return { key: k, accountId, currency, system: v, name: accounts.find((a) => a.id === accountId)?.name }; }).filter((x) => x.name);
+  const tOf = (c) => `${c.date}|${String(c.createdAt?.seconds || 0).padStart(12, '0')}`;
+  const lastOf = (a, cu) => counts.filter((x) => x.accountId === a && x.currency === cu).sort((p, q) => tOf(q).localeCompare(tOf(p)))[0];
+  const daysAgo = (d) => Math.floor((Date.parse(`${today()}T00:00:00Z`) - Date.parse(`${d}T00:00:00Z`)) / 86400000);
+  const diff = m && counted !== '' ? countDiff(numOf(counted), m.system) : null;
+  const open = (it) => { setM(it); setCounted(''); setNotes(''); setAdj(false); setErr(''); };
+  const save = async () => {
+    try {
+      if (counted === '' || !Number.isFinite(numOf(counted))) throw new Error('أدخل المبلغ الفعلي الموجود في الصندوق');
+      const cn = numOf(counted); const d = countDiff(cn, m.system);
+      const rec = { accountId: m.accountId, currency: m.currency, date: today(), countedAmount: cn, systemBalance: m.system, difference: d, notes, countedByName: user.name || user.email || '', adjusted: false };
+      if (adj && d !== 0) { if (!can('finalizeSettlement')) throw new Error('تسوية الفرق لمدير النظام فقط'); await commit(user, [{ col: 'cashCounts', data: { ...rec, adjusted: true } }, { col: 'cashTransactions', data: countAdjustmentTx({ accountId: m.accountId, currency: m.currency, diff: d, date: today() }) }]); }
+      else await saveRecord(user, 'cashCounts', rec);
+      setM(null);
+    } catch (e) { setErr(e.message); }
+  };
+  return (<>
+    {!items.length ? <Card><Empty title="لا توجد صناديق" hint="أنشئ صندوقاً وأدخل رصيده من تبويب الحسابات." /></Card> :
+      <div className="mb-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">{items.map((it) => { const l = lastOf(it.accountId, it.currency); const old = !l || daysAgo(l.date) > 7;
+        return (<div key={it.key} className={`rounded-xl border bg-white p-3 ${old ? 'border-amber-300' : 'border-slate-200'}`}>
+          <div className="flex items-start justify-between gap-2"><b>{it.name}</b><span className="text-xs text-slate-400">{it.currency}</span></div>
+          <div className="mt-1 text-xs text-slate-500">رصيد النظام</div><div className="num text-xl font-extrabold">{fmt(it.system)}</div>
+          <div className={`mt-1 text-xs ${old ? 'font-bold text-amber-700' : 'text-slate-500'}`}>{l ? `آخر جرد ${l.date} (قبل ${daysAgo(l.date)} يوم): ${Number(l.difference) === 0 ? 'مطابق' : `فرق ${fmt(l.difference)}${l.adjusted ? ' — سُوّي' : ' — لم يُسوَّ'}`}` : 'لم يُجرَد بعد'}</div>
+          {can('create') && <button className="btn btn-primary mt-2 w-full !py-1.5 text-sm" onClick={() => open(it)}>جرد الآن</button>}
+        </div>); })}</div>}
+    <Card title="سجل الجرد"><Table rows={[...counts].sort((p, q) => tOf(q).localeCompare(tOf(p)))} empty={<Empty title="لا يوجد جرد مسجَّل" hint="اعدّ النقد في يدك وسجّله لتكتشف أي عجز أو زيادة مبكراً." />} columns={[
+      { key: 'date', label: 'التاريخ' }, { key: 'a', label: 'الصندوق', render: (r) => accounts.find((x) => x.id === r.accountId)?.name || '—' },
+      { key: 'sys', label: 'رصيد النظام', render: (r) => <span className="num">{fmt(r.systemBalance)} {r.currency}</span> }, { key: 'cn', label: 'الفعلي', render: (r) => <b className="num">{fmt(r.countedAmount)}</b> },
+      { key: 'df', label: 'الفرق', render: (r) => <Badge tone={Number(r.difference) === 0 ? 'green' : Number(r.difference) > 0 ? 'blue' : 'red'}><span className="num">{Number(r.difference) === 0 ? 'مطابق' : `${Number(r.difference) > 0 ? '+' : '−'}${fmt(Math.abs(r.difference))}`}</span></Badge> },
+      { key: 'ad', label: 'التسوية', render: (r) => (Number(r.difference) === 0 ? '—' : r.adjusted ? 'سُوّي بحركة صندوق' : <span className="font-bold text-amber-700">لم يُسوَّ</span>) },
+      { key: 'by', label: 'بواسطة', render: (r) => r.countedByName || '—' }, { key: 'n', label: 'ملاحظات', render: (r) => r.notes || '—' }]} /></Card>
+    {m && <Modal open onClose={() => setM(null)} title={`جرد ${m.name} (${m.currency})`}>
+      <div className="space-y-3 text-sm">
+        {err && <div className="rounded-lg bg-rose-50 p-2 font-bold text-rose-700">{err}</div>}
+        <div className="rounded-lg bg-slate-50 p-3">رصيد النظام الآن: <b className="num">{fmt(m.system)} {m.currency}</b></div>
+        <label className="block"><span className="mb-1 block text-xs font-bold text-slate-500">المبلغ الفعلي الذي عددته في يدك *</span><input type="text" inputMode="decimal" dir="ltr" className="input" value={counted} onChange={(e) => setCounted(lightNum(e.target.value))} /></label>
+        {diff !== null && <div className={`rounded-lg p-3 font-bold ${diff === 0 ? 'bg-emerald-50 text-emerald-700' : diff > 0 ? 'bg-sky-50 text-sky-800' : 'bg-rose-50 text-rose-700'}`}>{diff === 0 ? 'مطابق للنظام' : diff > 0 ? `زيادة في الصندوق: ${fmt(diff)}` : `عجز في الصندوق: ${fmt(-diff)}`}</div>}
+        <label className="block"><span className="mb-1 block text-xs font-bold text-slate-500">ملاحظات (سبب الفرق إن عرفته)</span><input className="input" value={notes} onChange={(e) => setNotes(e.target.value)} /></label>
+        {diff !== null && diff !== 0 && (can('finalizeSettlement') ? <label className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 p-2.5"><input type="checkbox" className="mt-1" checked={adj} onChange={(e) => setAdj(e.target.checked)} /><span>سوِّ الفرق الآن بحركة صندوق ({diff > 0 ? 'داخل' : 'خارج'} {fmt(Math.abs(diff))}) ليصير رصيد النظام مساوياً للفعلي. تبقى الحركة ظاهرة ومعلَّمة «تسوية فرق جرد».</span></label> : <div className="text-xs text-slate-500">سيُسجَّل الفرق فقط. تسويته بحركة صندوق لمدير النظام.</div>)}
+        <div className="flex justify-end gap-2 pt-1"><button className="btn btn-ghost" onClick={() => setM(null)}>إلغاء</button><button className="btn btn-primary" onClick={save}>حفظ الجرد</button></div>
+      </div></Modal>}
+  </>);
+}
+
 export function Cash() {
   const { user, can } = useAuth();
   const [tab, setTab] = useState('bal'); const [m, setM] = useState(null); const [ed, setEd] = useState(null);
@@ -53,7 +102,7 @@ export function Cash() {
       <PageHeader title="الصندوق والحسابات" subtitle="كل عملة وكل حساب برصيد منفصل — التحويلات الداخلية ليست دخلاً ولا مصروفاً">
         {can('create') && <><button className="btn btn-ghost" onClick={() => setM('transfer')}><ArrowLeftRight size={16} />تحويل بين حسابين</button><button className="btn btn-primary" onClick={() => setM('income')}>إيراد آخر</button></>}
       </PageHeader>
-      <div className="mb-3 flex flex-wrap gap-2 [&>.btn]:flex-1 sm:[&>.btn]:flex-none">{[['bal', 'الأرصدة'], ['tx', 'الحركات'], ['acc', 'الحسابات']].map(([k, l]) => <button key={k} className={`btn ${tab === k ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setTab(k)}>{l}</button>)}</div>
+      <div className="mb-3 flex flex-wrap gap-2 [&>.btn]:flex-1 sm:[&>.btn]:flex-none">{[['bal', 'الأرصدة'], ['tx', 'الحركات'], ['count', 'جرد الصندوق'], ['acc', 'الحسابات']].map(([k, l]) => <button key={k} className={`btn ${tab === k ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setTab(k)}>{l}</button>)}</div>
       {orphans.length > 0 && <div className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-red-200 bg-red-50 p-3 text-sm"><span className="font-bold text-red-700">{orphans.length} حركة في الصندوق أصلها (مصروف / دفعة / حيوان...) ملغى لكنها ما زالت تُحسب وتظهر في الكشف والـ PDF.</span>{can('voidFinancial') && <button className="btn btn-danger" onClick={() => setOrphOpen(true)}>مراجعة وإلغاء</button>}</div>}
       {orphOpen && <Modal open onClose={() => setOrphOpen(false)} title="حركات صندوق بلا أصل" wide>
         <p className="mb-2 text-xs text-slate-500">هذه حركات بقيت في الصندوق بعد إلغاء ما يخصّها. إلغاؤها يصحّح الرصيد ويختفي من الكشف.</p>
@@ -63,6 +112,7 @@ export function Cash() {
       </Modal>}
       {tab === 'bal' && (accounts.length === 0 ? <Card><Empty title="لا توجد صناديق أو حسابات" hint="أنشئ أول صندوق وأدخل رصيده الافتتاحي من تبويب الحسابات." /></Card> :
         <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">{accounts.flatMap((a) => { const keys = Object.keys(bal).filter((k) => k.startsWith(a.id + '|')); return (keys.length ? keys : [`${a.id}|SYP`]).map((k) => <Stat key={k} label={`${a.name} (${k.split('|')[1]})`} value={money(bal[k] || 0, k.split('|')[1])} icon={Wallet} />); })}</div>)}
+      {tab === 'count' && <CashCount accounts={accounts} bal={bal} />}
       {tab === 'tx' && <Card>
         <div className="mb-3 flex flex-wrap items-end gap-2"><select className="input w-full sm:w-24" value={c} onChange={(e) => setC(e.target.value)}>{CURRENCIES.map(([v]) => <option key={v}>{v}</option>)}</select><input type="date" className="input w-full sm:w-40" value={from} onChange={(e) => setFrom(e.target.value)} /><input type="date" className="input w-full sm:w-40" value={to} onChange={(e) => setTo(e.target.value)} /><ExportButtons report={report} /></div>
         <div className="mb-3 grid gap-2 sm:grid-cols-3"><Stat label={`إجمالي الوارد ${c}`} value={fmt(flow.totalIn)} tone="green" /><Stat label={`إجمالي الصادر ${c}`} value={fmt(flow.totalOut)} tone="red" /><Stat label="الصافي" value={fmt(flow.net)} /></div>
@@ -193,6 +243,19 @@ export function Loans() {
 }
 
 // ───────── التسويات
+/** حالة قفل الفترات (بعد اعتماد التسوية) + تعديله لمدير النظام. */
+function LockBar() {
+  const { user, can } = useAuth(); const st = useSettings(); const [open, setOpen] = useState(false);
+  return (<>
+    <div className={`mb-4 flex flex-wrap items-center gap-2 rounded-xl border p-3 text-sm ${st.lockedThrough ? 'border-amber-300 bg-amber-50 text-amber-900' : 'border-slate-200 bg-slate-50 text-slate-600'}`}>
+      <span>{st.lockedThrough ? <>الفترات حتى <b className="num">{st.lockedThrough}</b> مقفلة بعد اعتماد التسوية: لا يُضاف فيها سجل ولا يُعدَّل ولا يُلغى إلا بفتحها من مدير النظام.</> : 'لا توجد فترة مقفلة بعد. تُقفل الفترة تلقائياً عند اعتماد تسوية.'}</span>
+      {can('finalizeSettlement') && <button className="btn btn-ghost ms-auto !py-1 text-xs" onClick={() => setOpen(true)}>تعديل القفل</button>}
+    </div>
+    {open && <FormModal open onClose={() => setOpen(false)} title="قفل الفترات" fields={[{ name: 'lockedThrough', label: 'مقفلة حتى تاريخ (اتركه فارغاً لفتح كل الفترات)', type: 'date' }, { name: 'lockNote', label: 'السبب (يُسجَّل في سجل التدقيق)', type: 'text', required: true }]}
+      defaults={{ lockedThrough: st.lockedThrough || '', lockNote: '' }} onSubmit={async (d) => { await saveRecord(user, 'settings', { lockedThrough: d.lockedThrough || '', lockNote: d.lockNote }, 'main'); setOpen(false); }} />}
+  </>);
+}
+
 export function Settlements() {
   const { user, can } = useAuth(); const s = useSettings();
   const [from, setFrom] = useState(`${new Date().getFullYear()}-01-01`); const [to, setTo] = useState(today()); const [c, setC] = useState('SYP'); const [err, setErr] = useState(''); const [dist, setDist] = useState(null); const [see, setSee] = useState(null);
@@ -222,7 +285,7 @@ export function Settlements() {
   }, [ags, dls, exps, epays, pays, custs, cash, events, animals, loans, reps, led, partners, from, to, c, asExpense, s.capitalClosedFrom, s.stockCostingMode, stockMv]);
   const allPartners = useCol('partners').rows; const name = (id) => allPartners.find((p) => p.id === id)?.name || '—';
   const distributedFor = (stId, pid) => round2(led.filter((e) => e.type === 'profit_distribution' && e.settlementId === stId && e.partnerId === pid && !e.voided).reduce((a, e) => a + Number(e.amount), 0));
-  const finalize = async () => { setErr(''); try { if (!confirm('تأكيد اعتماد التسوية؟ سيتم قيد تخصيص الأرباح في دفاتر الشركاء (بدون أي حركة نقدية).')) return; await finalizeSettlement(user, { from, to, currency: c, ...calc.pl, receivables: calc.recv, payables: calc.payable, loanBalances: calc.loanBal, capital: calc.capital, previousDistributions: calc.prevDist, allocBreakdown: calc.alloc.breakdown }, partners, hist, calc.alloc.allocations.map((a) => ({ partnerId: a.partnerId, amount: a.amount, group: a.group, capital: a.capital, ratioPct: a.ratioPct, fromOwnThird: a.fromOwnThird, fromFarmThird: a.fromFarmThird }))); } catch (e) { setErr(e.message); } };
+  const finalize = async () => { setErr(''); try { if (!confirm('تأكيد اعتماد التسوية؟ سيتم قيد تخصيص الأرباح في دفاتر الشركاء (بدون أي حركة نقدية).')) return; await finalizeSettlement(user, { from, to, currency: c, ...calc.pl, receivables: calc.recv, payables: calc.payable, loanBalances: calc.loanBal, capital: calc.capital, previousDistributions: calc.prevDist, allocBreakdown: calc.alloc.breakdown }, partners, hist, calc.alloc.allocations.map((a) => ({ partnerId: a.partnerId, amount: a.amount, group: a.group, capital: a.capital, ratioPct: a.ratioPct, fromOwnThird: a.fromOwnThird, fromFarmThird: a.fromFarmThird })), s.lockedThrough || ''); } catch (e) { setErr(e.message); } };
   const lines = [
     ['إيراد الحليب (التسليمات)', calc.pl.milkRevenue], ['إيرادات أخرى', calc.pl.otherIncome], ['ربح/خسارة بيع المواشي (سعر البيع − سعر الشراء)', calc.pl.animalSales], ['إجمالي الإيراد', calc.pl.revenue, 'b'],
     ['مصروفات التشغيل (كلها — بدون شراء الحيوانات)', calc.pl.operatingExpenses], ['إجمالي المصروفات', calc.pl.totalExpenses, 'b'],
@@ -235,6 +298,7 @@ export function Settlements() {
   return (
     <div>
       <PageHeader title="تسويات وتوزيع الأرباح" subtitle="التخصيص (قيد محاسبي) منفصل عن التوزيع النقدي الفعلي" />
+      <LockBar />
       <Card title="احتساب مقترح من السجلات الفعلية">
         <div className="mb-3 grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:items-end">
           <label className="block"><span className="mb-1 block text-xs font-bold text-slate-500">من</span><input type="date" dir="ltr" className="input sm:w-40" value={from} onChange={(e) => setFrom(e.target.value)} /></label>

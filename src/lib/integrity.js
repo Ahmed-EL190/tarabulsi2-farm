@@ -13,7 +13,7 @@ const ADD = new Set(['purchase', 'birth', 'exchange_in', 'transfer_in', 'opening
 export function auditData(D = {}) {
   const cashAll = D.cash || []; const cash = live(cashAll); const accounts = D.accounts || []; const expenses = D.expenses || []; const expensePays = D.expensePays || [];
   const custPays = D.custPays || []; const agreements = D.agreements || []; const deliveries = D.deliveries || []; const partners = D.partners || []; const ledger = D.ledger || [];
-  const stock = D.stock || []; const calfLogs = D.calfLogs || []; const settings = D.settings || {};
+  const cashCounts = D.cashCounts || []; const stock = D.stock || []; const calfLogs = D.calfLogs || []; const settings = D.settings || {};
   const loans = D.loans || []; const loanReps = D.loanReps || []; const settlements = D.settlements || []; const animals = D.animals || []; const events = D.events || []; const production = D.production || [];
   const EXP = Object.fromEntries(expenses.map((e) => [e.id, e])); const AN = Object.fromEntries(animals.map((a) => [a.id, a])); const AG = Object.fromEntries(agreements.map((a) => [a.id, a]));
   const PAY = Object.fromEntries(expensePays.map((p) => [p.id, p])); const PARTNER = Object.fromEntries(partners.map((p) => [p.id, p]));
@@ -66,6 +66,9 @@ export function auditData(D = {}) {
   const known = new Set(allExpenseCategories().map(([k]) => k));
   add('unknownCategory', 'المصروفات', 'warn', 'مصروفات بفئة غير معروفة', live(expenses).filter((e) => !known.has(e.category)).map((e) => ({ text: `${e.date} — ${e.description}: الفئة «${e.category}»`, resolve: { kind: 'expense-edit', id: e.id } })), { hint: 'قد تكون فئة مخصّصة حُذفت. غيّر فئة المصروف.' });
 
+  // جرد الصندوق: آخر جرد لكل صندوق فيه فرق ولم يُسوَّ
+  const lastCnt = {}; live(cashCounts).forEach((c) => { const k = `${c.accountId}|${c.currency}`; const t = `${c.date}|${String(c.createdAt?.seconds || 0).padStart(12, '0')}`; if (!lastCnt[k] || t > lastCnt[k].t) lastCnt[k] = { c, t }; });
+  add('cashCountOpen', 'الصندوق', 'warn', 'آخر جرد لصندوق فيه فرق لم يُسوَّ', Object.values(lastCnt).filter(({ c }) => n(c.difference) !== 0 && !c.adjusted).map(({ c }) => ({ text: `${c.date} — ${accName(c.accountId)}: النظام ${c.systemBalance} والفعلي ${c.countedAmount} (الفرق ${c.difference} ${c.currency})` })), { hint: 'سوِّ الفرق من تبويب «جرد الصندوق» (مدير النظام) أو افحص سببه ثم اجرِ جرداً جديداً.' });
   const equipBad = live(expenses).filter((e) => e.category === 'equipment' && !ledLive.some((l) => l.expenseId === e.id && l.type === 'expense_paid_personally'));
   add('equipmentNoPartner', 'المصروفات', 'warn', 'معدات لم تُدفع من حساب شريك (لا تدخل رأس مال أحد)', equipBad.map((e) => ({ text: `${e.date} — ${e.description} (${e.amount} ${e.currency || ''})`, resolve: { kind: 'expense-edit', id: e.id } })), { hint: 'رأس المال = ما دفعه الشريك من ماله. لو دفعتها المزرعة من صندوقها عمداً فتجاهل هذا التنبيه.' });
 

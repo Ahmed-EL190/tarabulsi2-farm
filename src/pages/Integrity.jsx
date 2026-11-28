@@ -105,7 +105,7 @@ export default function Integrity() {
     cash: useCol('cashTransactions').rows, accounts: useCol('cashAccounts').rows, expenses: useCol('expenses').rows, expensePays: useCol('expensePayments').rows, custPays: useCol('customerPayments').rows,
     agreements: useCol('milkSales').rows, deliveries: useCol('milkDeliveries').rows, partners: useCol('partners').rows, ledger: useCol('partnerCapitalTransactions').rows, loans: useCol('partnerLoans').rows,
     loanReps: useCol('partnerLoanRepayments').rows, settlements: useCol('settlements').rows, animals: useCol('animals').rows, events: useCol('animalEvents').rows, production: useCol('milkProduction').rows,
-    stock: useCol('stockMovements').rows, calfLogs: useCol('calfLogs').rows, settings: useSettings(),
+    stock: useCol('stockMovements').rows, cashCounts: useCol('cashCounts').rows, calfLogs: useCol('calfLogs').rows, settings: useSettings(),
   };
   const deps = Object.values(D);
   const r = useMemo(() => auditData(D), deps);

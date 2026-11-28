@@ -10,7 +10,7 @@ export const COL = {
   customers: ['عميل / مورّد', 'العملاء والمبيعات'], customerPayments: ['دفعة عميل', 'العملاء والمبيعات'], milkSales: ['اتفاقية حليب', 'العملاء والمبيعات'], milkDeliveries: ['تسليم حليب', 'العملاء والمبيعات'], milkProduction: ['إنتاج حليب', 'العملاء والمبيعات'],
   animals: ['حيوان', 'المواشي'], animalEvents: ['حدث حيوان', 'المواشي'], calfLogs: ['سجل تسمين', 'المواشي'],
   partners: ['شريك', 'الشركاء'], partnerCapitalTransactions: ['قيد في دفتر شريك', 'الشركاء'], partnerLoans: ['سلفة شريك', 'الشركاء'], partnerLoanRepayments: ['سداد سلفة', 'الشركاء'],
-  settlements: ['تسوية أرباح', 'الأرباح'],
+  settlements: ['تسوية أرباح', 'الأرباح'], cashCounts: ['جرد صندوق', 'الصندوق'],
   stockItems: ['صنف مخزون', 'المخزون'], stockMovements: ['حركة مخزون', 'المخزون'],
   users: ['مستخدم', 'النظام'], settings: ['إعدادات الموقع', 'النظام'],
 };
@@ -18,7 +18,7 @@ export const AREAS = ['المصروفات', 'الصندوق', 'العملاء و
 const PRIORITY = ['settlements', 'calfLogs', 'expenses', 'animalEvents', 'animals', 'customerPayments', 'milkDeliveries', 'partnerLoans', 'partnerLoanRepayments', 'partnerCapitalTransactions', 'cashTransactions', 'stockMovements', 'expensePayments'];
 const EVT = { purchase: 'شراء', sale: 'بيع', birth: 'ولادة', death: 'نفوق', exchange_in: 'وارد بتبادل', exchange_out: 'خارج بتبادل', transfer_out: 'نقل خارج المزرعة', opening: 'رصيد افتتاحي' };
 const CALF = { arrival_weight: 'وزن عند الوصول', weight: 'وزن', feed: 'علف', milk: 'حليب', other: 'بند آخر' };
-const FIELD = { amount: 'المبلغ', date: 'التاريخ', description: 'الوصف', qty: 'الكمية', unit: 'الوحدة', tag: 'الرقم', name: 'الاسم', notes: 'ملاحظات', currency: 'العملة', value: 'القيمة', supplierName: 'المورّد', principal: 'مبلغ السلفة', phone: 'الهاتف', email: 'البريد', ownershipPct: 'نسبة الملكية %', profitSharePct: 'نسبة الأرباح %', acquisitionCost: 'سعر الشراء', breed: 'السلالة', birthDate: 'تاريخ الميلاد', from: 'من', to: 'إلى', netProfit: 'صافي الربح', pricePerLiter: 'سعر اللتر', voidReason: 'سبب الإلغاء', item: 'الصنف', itemName: 'الصنف', stockQty: 'كمية المخزون', farmName: 'اسم المزرعة', capitalClosedFrom: 'إغلاق رأس المال من', stockCostingMode: 'طريقة حساب العلف', morning: 'صباحاً', evening: 'مساءً', dueDate: 'الاستحقاق', disbursementDate: 'تاريخ السلفة' };
+const FIELD = { amount: 'المبلغ', date: 'التاريخ', description: 'الوصف', qty: 'الكمية', unit: 'الوحدة', tag: 'الرقم', name: 'الاسم', notes: 'ملاحظات', currency: 'العملة', value: 'القيمة', supplierName: 'المورّد', principal: 'مبلغ السلفة', phone: 'الهاتف', email: 'البريد', ownershipPct: 'نسبة الملكية %', profitSharePct: 'نسبة الأرباح %', acquisitionCost: 'سعر الشراء', breed: 'السلالة', birthDate: 'تاريخ الميلاد', from: 'من', to: 'إلى', netProfit: 'صافي الربح', pricePerLiter: 'سعر اللتر', voidReason: 'سبب الإلغاء', item: 'الصنف', itemName: 'الصنف', stockQty: 'كمية المخزون', farmName: 'اسم المزرعة', lockedThrough: 'الفترات مقفلة حتى', lockNote: 'سبب القفل', countedAmount: 'المبلغ الفعلي', systemBalance: 'رصيد النظام', difference: 'الفرق', capitalClosedFrom: 'إغلاق رأس المال من', stockCostingMode: 'طريقة حساب العلف', morning: 'صباحاً', evening: 'مساءً', dueDate: 'الاستحقاق', disbursementDate: 'تاريخ السلفة' };
 const SKIP = new Set(['voided', 'voidedAt', 'createdAt', 'updatedAt', 'createdBy', 'updatedBy', 'updatedAt', 'eventId', 'exchangeId', 'ledgerEntryId', 'animalId', 'calfId', 'itemId', 'expenseId', 'calfLogId', 'agreementId', 'stockItemName', 'paidFrom', 'payerPartnerId', 'payers']);
 
 /** summary قد يكون JSON مقطوعاً (أول 900 حرف): نقرأه كاملاً أو نستخرج منه الأزواج البسيطة. */
@@ -58,9 +58,10 @@ export function describeRecord(col, rec = {}, ctx = {}, docId = '') {
       case 'calfLogs': return [CALF[rec.type] || '', rec.qty ? `${num(rec.qty)} ${rec.unit || ''}`.trim() : '', rec.tag && `للعجل ${rec.tag}`];
       case 'stockItems': return [rec.name];
       case 'stockMovements': return [rec.type === 'in' ? 'وارد' : rec.type === 'out' ? 'صادر' : '', `${rec.qty !== undefined ? num(rec.qty) : ''} ${rec.itemName || ''}`.trim()];
+      case 'cashCounts': return ['جرد', rec.countedAmount !== undefined ? `الفعلي ${money(rec.countedAmount, rec.currency)}` : '', rec.difference !== undefined ? `الفرق ${money(rec.difference, rec.currency)}` : '', rec.accountId && ctx.account ? `(${ctx.account(rec.accountId)})` : ''];
       case 'settlements': return [rec.from && rec.to ? `من ${rec.from} إلى ${rec.to}` : '', rec.netProfit !== undefined ? `صافي الربح ${money(rec.netProfit, rec.currency)}` : ''];
       case 'users': return [rec.name || rec.email, rec.role];
-      case 'settings': return [];
+      case 'settings': return rec.lockedThrough !== undefined ? [rec.lockedThrough ? `قفل الفترات حتى ${rec.lockedThrough}` : 'فتح كل الفترات', rec.lockNote] : [];
       default: return [];
     }
   })();

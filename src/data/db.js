@@ -1,5 +1,6 @@
 import { setCustomLists } from '../lib/constants';
 import { animalIdFromTag } from '../lib/finance';
+import { lockViolation } from '../lib/periodLock';
 import { useEffect, useState, useCallback, useSyncExternalStore } from 'react';
 import { collection, doc, onSnapshot, writeBatch, runTransaction, serverTimestamp, query, orderBy, limit } from 'firebase/firestore';
 import { db } from '../lib/firebase';
@@ -74,6 +75,9 @@ function audit(batch, user, action, col, id, data) {
 
 /** Write several docs atomically, with one audit entry each. ops: [{col,id?,data,merge?}] */
 export async function commit(user, ops, action = 'create') {
+  // قفل الفترات المعتمدة (لا يسري على مدير النظام)
+  const lockedThrough = store.get('settings')?.map.get('main')?.lockedThrough;
+  if (lockedThrough && user?.role !== 'admin') { const msg = lockViolation(ops, lockedThrough, (col, id) => store.get(col)?.map.get(id)); if (msg) throw new Error(msg); }
   const b = writeBatch(db);
   const ids = [];
   for (const o of ops) {

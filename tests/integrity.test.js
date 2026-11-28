@@ -154,3 +154,14 @@ describe('ربط علف التسمين بالمخزون', () => {
     expect(ids(auditData({ calfLogs: [{ ...lg, voided: true }], animals, stock: [{ id: 'M', itemId: 'I', type: 'out', qty: 5, calfLogId: 'L' }] }))).toContain('stockOutOrphan');
   });
 });
+
+describe('جرد الصندوق في فحص السلامة', () => {
+  const ids = (r) => r.checks.filter((c) => c.items.length).map((c) => c.id);
+  const acc = [{ id: 'a1', name: 'الرئيسي' }];
+  it('آخر جرد فيه فرق لم يُسوَّ يظهر تنبيهاً، ويختفي إن سُوّي أو جاء جرد لاحق مطابق', () => {
+    const c1 = { id: 'c1', accountId: 'a1', currency: 'SYP', date: '2026-11-01', countedAmount: 900, systemBalance: 1000, difference: -100, adjusted: false };
+    expect(ids(auditData({ accounts: acc, cashCounts: [c1] }))).toContain('cashCountOpen');
+    expect(ids(auditData({ accounts: acc, cashCounts: [{ ...c1, adjusted: true }] }))).not.toContain('cashCountOpen');
+    expect(ids(auditData({ accounts: acc, cashCounts: [c1, { ...c1, id: 'c2', date: '2026-11-05', difference: 0, countedAmount: 1000 }] }))).not.toContain('cashCountOpen');
+  });
+});

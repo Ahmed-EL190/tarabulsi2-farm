@@ -253,6 +253,10 @@ export function operatingExpenses(expenses, { from, to, currency } = {}) {
 // ───────────── Cash ─────────────
 const IN_TYPES = new Set(['customer_payment', 'other_income', 'animal_sale', 'loan_received', 'capital_contribution', 'transfer_in', 'opening_balance', 'animal_exchange_receipt']);
 const isIn = (t) => (t.direction ? t.direction === 'in' : IN_TYPES.has(t.type));
+/** فرق الجرد = الفعلي − رصيد النظام (موجب: زيادة، سالب: عجز). */
+export const countDiff = (counted, system) => round2(n(counted) - n(system));
+/** حركة صندوق تُسوّي فرق الجرد (زيادة ← داخل، عجز ← خارج). */
+export const countAdjustmentTx = ({ accountId, currency, diff, date }) => ({ date, type: 'cash_count_adjustment', direction: diff > 0 ? 'in' : 'out', amount: Math.abs(round2(diff)), currency, accountId, description: diff > 0 ? 'تسوية فرق جرد (زيادة في الصندوق)' : 'تسوية فرق جرد (عجز في الصندوق)' });
 export function cashBalances(txs) {
   const out = {};
   for (const t of txs) {
